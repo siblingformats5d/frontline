@@ -1,0 +1,2880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0c1216">
+<title>Front Line</title>
+<!--
+  FRONT LINE — a grand strategy war game in one file.
+
+  Built on the architecture of Empire FC 2. What carried over, near enough unchanged:
+    - one global G, rebuilt indexes, a central movement API, an integrity guard
+    - a tick function that advances the whole world one step
+    - dice that weight a roll by two strength numbers
+    - compact-ish save, shape validation, scrub on import
+  What is new here and has no equivalent in the football game:
+    - a MAP. Who can fight whom depends on who is adjacent, not on a fixed schedule.
+    - a clock that runs on its own instead of waiting for a tap.
+    - relationships between AI countries, stored once per pair.
+
+  Two rules this file does not break:
+    1. All army and province movement goes through the API in the WORLD MUTATION
+       section. Hand-rolled edits to prov.owner or army.prov cause ghosts.
+    2. Every relationship between two countries lives in exactly one record,
+       keyed on the sorted pair. Never on either country.
+-->
+<style>
+  /* ---------------------------------------------------------------
+     Palette: a situation map under low light. The chrome is cold and
+     almost colourless on purpose, because ten country colours have to
+     read clearly on top of it. Only three UI colours are allowed to be
+     saturated: amber for you, red for war, teal for a pact.
+     Type: system stack for prose, monospace for every number the player
+     reads off the board. Military readouts are monospace. No webfont,
+     so the game looks the same offline as online.
+  ------------------------------------------------------------------ */
+  :root{
+    --ground:#0c1216; --panel:#141e26; --panel2:#1b2833; --line:#27363f;
+    --ink:#dae4ea; --muted:#7b909e; --dim:#4f6371;
+    --you:#f0b429; --war:#e05252; --pact:#3fb0a0; --ok:#6cc27a;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;background:var(--ground);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:15px;line-height:1.45;overscroll-behavior-y:none}
+  body{padding-bottom:calc(58px + env(safe-area-inset-bottom))}
+  #app{max-width:560px;margin:0 auto}
+  button{font:inherit;color:inherit;border:none;background:none;cursor:pointer}
+  button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--you);outline-offset:2px}
+
+  /* ---- top bar: the readout. Always visible, always current. ---- */
+  .bar{position:sticky;top:0;z-index:12;background:var(--ground);
+    border-bottom:1px solid var(--line);padding:6px 8px 5px}
+  .bar .who{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+  .flag{width:13px;height:13px;border-radius:2px;flex:none;border:1px solid rgba(255,255,255,.28)}
+  .bar h1{font-size:14px;margin:0;font-weight:700;letter-spacing:.2px;flex:1;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .clock{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.4px}
+  .res{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px}
+  .res>div{background:var(--panel);border:1px solid var(--line);border-radius:4px;
+    padding:3px 2px;text-align:center;min-width:0}
+  .res .k{font-size:8px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);
+    white-space:nowrap;overflow:hidden}
+  .res .v{font-family:var(--mono);font-size:12px;font-weight:700;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .res .d{font-family:var(--mono);font-size:8px;color:var(--muted)}
+  .up{color:var(--ok)} .down{color:var(--war)}
+
+  /* ---- the map. This is the signature: everything else is a panel. ---- */
+  .mapwrap{position:relative;background:#080d11;border-bottom:1px solid var(--line)}
+  svg.map{display:block;width:100%;height:auto;touch-action:manipulation}
+  .hex{stroke:#0a1015;stroke-width:1.4;cursor:pointer}
+  .hex.sea{fill:#0d1a24;stroke:#0a1218;cursor:default}
+  .hex.sel{stroke:var(--you);stroke-width:2.6}
+  .hexlbl{font-family:var(--mono);font-size:8px;fill:rgba(255,255,255,.5);
+    text-anchor:middle;pointer-events:none;letter-spacing:.2px}
+  .city{fill:rgba(255,255,255,.82);pointer-events:none}
+  .cap{fill:#fff;stroke:#000;stroke-width:.5;pointer-events:none}
+  .cnt{pointer-events:none}
+  .cnt rect{stroke:rgba(0,0,0,.6);stroke-width:1}
+  .cnt text{font-family:var(--mono);font-size:9px;font-weight:700;text-anchor:middle;
+    fill:#0a0f13;dominant-baseline:central}
+  .arrow{pointer-events:none;stroke-width:3;stroke-linecap:round;opacity:.9}
+  .speeds{display:flex;gap:2px;flex:none}
+  .speeds button{font-family:var(--mono);font-size:10px;padding:3px 7px;border-radius:4px;
+    background:rgba(10,16,20,.85);border:1px solid var(--line);color:var(--muted)}
+  .speeds button.on{color:var(--ground);background:var(--you);border-color:var(--you);font-weight:700}
+
+  /* ---- panels ---- */
+  .wrap{padding:8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:7px;
+    padding:9px 10px;margin-bottom:7px}
+  .eyebrow{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.3px;
+    color:var(--dim);margin-bottom:5px}
+  h3{font-size:14px;margin:0 0 5px;font-weight:700}
+  .small{font-size:12px} .muted{color:var(--muted)} .mono{font-family:var(--mono)}
+  .row{display:flex;align-items:center;gap:7px}
+  .between{display:flex;align-items:center;justify-content:space-between;gap:7px}
+  .divider{height:1px;background:var(--line);margin:7px 0}
+  .btn{background:var(--panel2);border:1px solid var(--line);border-radius:5px;
+    padding:7px 11px;font-size:13px;font-weight:600}
+  .btn.p{background:var(--you);border-color:var(--you);color:#12181c}
+  .btn.d{background:transparent;border-color:var(--war);color:var(--war)}
+  .btn.sm{padding:4px 8px;font-size:11px;border-radius:4px}
+  .btn[disabled]{opacity:.36}
+  .pill{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:3px;
+    border:1px solid var(--line);color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  .pill.war{color:var(--war);border-color:var(--war)}
+  .pill.pact{color:var(--pact);border-color:var(--pact)}
+  .pill.just{color:var(--you);border-color:var(--you)}
+  .bar2{height:5px;background:#0a1015;border-radius:3px;overflow:hidden}
+  .bar2 i{display:block;height:100%}
+  .lst>div{padding:6px 0;border-top:1px solid var(--line)}
+  .lst>div:first-child{border-top:none}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.8px;
+    color:var(--dim);font-weight:400;text-align:right;padding:2px 3px}
+  td{padding:4px 3px;text-align:right;border-top:1px solid var(--line)}
+  th.l,td.l{text-align:left}
+
+  /* ---- nav ---- */
+  nav{position:fixed;bottom:0;left:0;right:0;max-width:560px;margin:0 auto;z-index:14;
+    display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:var(--panel);
+    border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+  nav button{padding:7px 1px 8px;font-size:9.5px;color:var(--muted);min-width:0;
+    display:flex;flex-direction:column;align-items:center;gap:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  nav button .ic{font-size:15px;line-height:1}
+  nav button.on{color:var(--you)}
+  nav button.alert .ic{color:var(--war)}
+
+  /* ---- sheet + toasts ---- */
+  .overlay{position:fixed;inset:0;background:rgba(4,8,11,.74);z-index:30;
+    display:flex;align-items:flex-end;justify-content:center}
+  .sheet{background:var(--panel);border:1px solid var(--line);border-radius:12px 12px 0 0;
+    padding:14px;width:100%;max-width:560px;max-height:84vh;overflow:auto}
+  .toasts{position:fixed;bottom:66px;left:50%;transform:translateX(-50%);z-index:20;
+    width:calc(100% - 20px);max-width:400px;display:flex;flex-direction:column;gap:4px;
+    pointer-events:none}
+  .toast{background:rgba(20,30,38,.97);border:1px solid var(--line);border-left:3px solid var(--you);
+    border-radius:5px;padding:6px 9px;font-size:12px}
+  .toast.war{border-left-color:var(--war)} .toast.good{border-left-color:var(--ok)}
+  @media (prefers-reduced-motion:no-preference){
+    .toast{animation:tin .18s ease-out}
+    @keyframes tin{from{opacity:0;transform:translateY(6px)}}
+  }
+  .start{padding:22px 16px;text-align:center}
+  .start h1{font-size:26px;letter-spacing:3px;text-transform:uppercase;margin:0 0 2px;color:var(--you)}
+  .pick{display:flex;align-items:center;gap:9px;padding:9px 10px;background:var(--panel);
+    border:1px solid var(--line);border-radius:6px;margin-bottom:5px;text-align:left;width:100%}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+"use strict";
+/* ================================================================
+   CONSTANTS
+   ================================================================ */
+const SAVE_KEY="frontline_v1", SAVE_VER=1;
+const COLS=11, ROWS=9, HEX=30;          // pointy-top hexes, odd-row offset
+const SEA_CHANCE=.12;
+const N_COUNTRIES=10;
+const START_YEAR=1936;
+const TICK_MS={0:0,1:900,2:420,3:170};  // paused, slow, normal, fast
+
+const REINFORCE_OVER=14;                // how far a reinforced army may push past its size
+const REPLENISH=.09;                    // troops per day recovered in friendly land
+const RECRUIT_DAYS=14;                  // days for one recruitment order to land
+const MOVE_DAYS=2;                      // days an army needs to reach a neighbour
+const JUSTIFY_DAYS=20;                  // the kid's number, and a good one
+const JUSTIFY_PP=55;
+const BROKEN_AT=.18;                    // below this share of max troops, an army breaks
+const ARMY_MAX=8;                       // armies one country may field
+/* A capital falling ends a country only once that country is already beaten. Above
+   this share of its original land it relocates the seat of government and fights on.
+   Without this, one lucky thrust hands an AI ten provinces and the map snowballs to a
+   single winner inside two years. Measured in the harness, not guessed. */
+const CAPITULATE_AT=.5;
+const OPENING_PEACE=365;                // days before the first war may be justified
+const PACT_DRIFT_CAP=55;                // friendship from a pact alone stops climbing here
+const MAX_PACTS=3;                      // nobody allies with the entire world
+
+const COUNTRY_COLORS=["#c8553d","#4a7fb5","#7a9e3f","#9b59b6","#d9873f",
+  "#3fa0a0","#c05a8a","#5c6bc0","#7e8b3a","#b5504f"];
+/* The ten largest countries in Europe by land area, in order: Russia, Ukraine, France,
+   Spain, Sweden, Norway, Germany, Finland, Poland, Italy. (Russia counted by its
+   European portion; by population the list would swap Norway and Finland out for the
+   United Kingdom and Romania.)
+
+   Each is a slot with a terrain profile and a bonus, and each is handed to whichever
+   generated country its land actually resembles, so the blurb describes the map in
+   front of you rather than decorating it. The mountain nation really does get the
+   mountains. The map is not Europe and makes no attempt to be: these are names and
+   characters, not borders. */
+const NATIONS=[
+ {name:"Russia",  blurb:"Vast. All of its problems are at the edges.",
+  want:{size:3},          bonus:{recruit:.15,politics:.2}},
+ {name:"Ukraine", blurb:"Open black earth. Room to march.",
+  want:{plain:3,size:1},  bonus:{recruit:.2}},
+ {name:"France",  blurb:"Talks first. Fights well enough afterwards.",
+  want:{city:1,plain:1},  bonus:{politics:.5,defence:-.08}},
+ {name:"Spain",   blurb:"Two coasts and every port between them.",
+  want:{coast:3},         bonus:{income:.25}},
+ {name:"Sweden",  blurb:"Forest and iron. Slow to wear down.",
+  want:{wood:3},          bonus:{defence:.15,replenish:.5}},
+ {name:"Norway",  blurb:"Mountains and fjords. Easy to hold, hard to farm.",
+  want:{mtn:3,hill:2},    bonus:{defence:.22,income:-.1}},
+ {name:"Germany", blurb:"Foundries, coal and rail.",
+  want:{city:3},          bonus:{industry:.3}},
+ {name:"Finland", blurb:"Lake, bog and winter. Nobody enjoys the crossing.",
+  want:{marsh:4},         bonus:{defence:.28,income:-.18}},
+ {name:"Poland",  blurb:"Flat, fertile, and between two larger neighbours.",
+  want:{small:2,plain:2,city:1}, bonus:{income:.45,defence:-.12}},
+ {name:"Italy",   blurb:"Bologna and Padua. Ideas travel faster here.",
+  want:{city:2,coast:1},  bonus:{research:.3}}];
+const PERSONALITIES=[
+  {k:"expansionist",label:"Expansionist",aggro:1.35,ally:.75,research:.9},
+  {k:"defensive",   label:"Defensive",   aggro:.55,ally:1.25,research:1.05},
+  {k:"opportunist", label:"Opportunist", aggro:1.0, ally:1.0, research:1.0},
+  {k:"isolationist",label:"Isolationist",aggro:.7, ally:.45, research:1.15}];
+
+const TERRAIN={
+  plain:{k:"plain",label:"Plain",def:1.00,income:1.00},
+  hill: {k:"hill", label:"Hills",def:1.25,income:.85},
+  mtn:  {k:"mtn",  label:"Mountains",def:1.55,income:.6},
+  wood: {k:"wood", label:"Forest",def:1.15,income:.9},
+  marsh:{k:"marsh",label:"Marsh",def:1.3,income:.7}};
+const TERRAIN_TINT={plain:0,hill:-.1,mtn:-.2,wood:-.14,marsh:-.06};
+
+/* Research is three columns because that is how the reference game reads:
+   what you fight with, what you fight from, and what you fight over. */
+const TECH=[
+  {k:"infantry",col:"Land",label:"Infantry",desc:"Every soldier hits harder.",cost:1400,days:24,max:5},
+  {k:"armor",   col:"Land",label:"Armour",  desc:"Attacking armies do more damage.",cost:2100,days:32,max:5},
+  {k:"at",      col:"Land",label:"Anti-tank",desc:"Cuts enemy armour bonus.",cost:1600,days:26,max:5},
+  /* The Defence column is a chain, not a shelf. He described levelling "from the top
+     down", and an unlocked shelf let an isolationist with spare cash buy a deterrent in
+     year two. Land stays free-choice. */
+  {k:"fort",    col:"Defence",label:"Fortification",desc:"Walls hold even with nobody behind them.",cost:1500,days:26,max:5},
+  {k:"air",     col:"Defence",label:"Air force",desc:"Your armies hit harder in every battle.",cost:2400,days:36,max:5,req:{fort:2}},
+  {k:"nuke",    col:"Defence",label:"Deterrent",desc:"Justifying a war on you costs far more.",cost:5200,days:70,max:3,req:{air:2}},
+  {k:"industry",col:"Industry",label:"Industry",desc:"Factories build faster.",cost:1200,days:20,max:5},
+  {k:"logistics",col:"Industry",label:"Logistics",desc:"Armies move in one day less.",cost:1800,days:30,max:3},
+  {k:"admin",   col:"Industry",label:"Administration",desc:"More tax from every province.",cost:1300,days:22,max:5},
+  /* Twelve percent of the map is water and it was decoration. This is not a ship: it is
+     permission for an army to cross to a coast it could see but could not reach. */
+  {k:"navy",    col:"Industry",label:"Navy",desc:"Armies can cross water to another coast. Slow.",cost:2000,days:34,max:3}];
+const TECH_BY=Object.fromEntries(TECH.map(t=>[t.k,t]));
+
+/* ================================================================
+   SMALL UTILITIES
+   ================================================================ */
+let G=null;
+const rnd=()=>Math.random();
+const ri=(a,b)=>a+Math.floor(rnd()*(b-a+1));
+const pick=a=>a[Math.floor(rnd()*a.length)];
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+/* Every string that reaches innerHTML goes through esc(). Country and province names
+   come from closed pools, but the player types their nation's name at the start, and
+   that is exactly the hole this closes before it exists. */
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+/* Returns the first element for a single-root template, and a fragment when the
+   template has several roots. Returning only firstElementChild silently dropped
+   everything after the first tag, which is how the Nation stats table went missing
+   for a whole build without throwing anything. */
+const $=h=>{
+  const d=document.createElement("div");d.innerHTML=h;
+  if(d.children.length<=1)return d.firstElementChild;
+  const f=document.createDocumentFragment();
+  while(d.firstChild)f.appendChild(d.firstChild);
+  return f;
+};
+function num(n){n=Math.round(n);
+  if(Math.abs(n)>=1e6)return (n/1e6).toFixed(Math.abs(n)>=1e7?0:1)+"M";
+  if(Math.abs(n)>=1e4)return (n/1e3).toFixed(0)+"k";
+  if(Math.abs(n)>=1e3)return (n/1e3).toFixed(1)+"k";
+  return String(n);}
+function money(n){return "$"+num(n);}
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const MDAYS=[31,28,31,30,31,30,31,31,30,31,30,31];
+function dateOf(day){
+  let y=START_YEAR,d=day;
+  for(;;){const len=365;if(d<len)break;d-=len;y++;}
+  let m=0;while(d>=MDAYS[m]){d-=MDAYS[m];m++;}
+  return {y,m,d:d+1};}
+function dateStr(day){const t=dateOf(day);return `${String(t.d).padStart(2,"0")} ${MONTHS[t.m]} ${t.y}`;}
+
+/* ---- name pools ---- */
+const NAME_A=["Vor","Kar","Mel","Tar","Ost","Bran","Dal","Sev","Ker","Lun","Rhen","Astr","Gral","Mor","Vel","Tesh","Cald","Nor","Yss","Pren"];
+const NAME_B=["ovia","stadt","mark","gard","landia","holm","ova","esse","burg","aria","dor","vind","stan","heim","ica","oria","vell","gorod","alia","mere"];
+const PLACE_A=["Ald","Bel","Cor","Dun","Eln","Fal","Gost","Hald","Ir","Jen","Kol","Lem","Mird","Nev","Or","Pel","Rask","Sten","Tov","Ulm","Ves","Wyd","Zar"];
+const PLACE_B=["burg","ford","gate","hollow","mont","reach","vale","wick","fell","stead","cross","hain","moor","ridge","sk","by","tal","point"];
+function countryName(used){for(let i=0;i<200;i++){const n=pick(NAME_A)+pick(NAME_B);if(!used.has(n)){used.add(n);return n;}}return "Republic "+used.size;}
+function placeName(used){for(let i=0;i<400;i++){const n=pick(PLACE_A)+pick(PLACE_B);if(!used.has(n)){used.add(n);return n;}}return "Post "+used.size;}
+const GEN_A=["Aleksa","Bruno","Casimir","Dmitri","Erika","Faris","Greta","Halvard","Ines","Jorg","Klaus","Lena","Milos","Nadia","Otto","Pia","Rurik","Sonja","Tomas","Ursa","Viktor","Wanda","Yuri","Zofia"];
+const GEN_B=["Varga","Kessler","Novak","Petrov","Halloran","Berg","Dukic","Marek","Sandoval","Ilves","Rask","Tolan","Grath","Weiss","Ozols","Farkas"];
+const genName=()=>pick(GEN_A)+" "+pick(GEN_B);
+
+/* ================================================================
+   MAP GEOMETRY
+   Pointy-top hexes, odd-row offset. Adjacency is the whole reason this
+   game exists, so it lives in one function and nothing else computes it.
+   ================================================================ */
+function hexXY(col,row){
+  const w=Math.sqrt(3)*HEX;
+  return {x:w*(col+(row&1?.5:0))+w*.5+3, y:HEX*1.5*row+HEX+3};
+}
+const MAPW=Math.ceil(Math.sqrt(3)*HEX*(COLS+.5))+6;
+const MAPH=Math.ceil(HEX*1.5*(ROWS-1)+HEX*2)+6;
+function hexPath(cx,cy){
+  let p="";
+  for(let i=0;i<6;i++){
+    const a=Math.PI/180*(60*i-90);
+    p+=(i?"L":"M")+(cx+HEX*Math.cos(a)).toFixed(1)+" "+(cy+HEX*Math.sin(a)).toFixed(1);
+  }
+  return p+"Z";
+}
+const NB_EVEN=[[+1,0],[-1,0],[0,-1],[-1,-1],[0,+1],[-1,+1]];
+const NB_ODD =[[+1,0],[-1,0],[0,-1],[+1,-1],[0,+1],[+1,+1]];
+function neighborCells(col,row){
+  const list=(row&1)?NB_ODD:NB_EVEN,out=[];
+  for(const [dc,dr] of list){
+    const c=col+dc,r=row+dr;
+    if(c>=0&&c<COLS&&r>=0&&r<ROWS)out.push(r*COLS+c);
+  }
+  return out;
+}
+
+/* ================================================================
+   INDEXES
+   ================================================================ */
+const PROV=new Map(), CTRY=new Map(), ARMY=new Map();
+function rebuildIndex(){
+  PROV.clear();CTRY.clear();ARMY.clear();
+  G.provinces.forEach(p=>PROV.set(p.id,p));
+  G.countries.forEach(c=>CTRY.set(c.id,c));
+  G.armies.forEach(a=>ARMY.set(a.id,a));
+}
+const PV=id=>PROV.get(id);
+const CO=id=>CTRY.get(id);
+const AR=id=>ARMY.get(id);
+const you=()=>CO(G.you);
+const alive=()=>G.countries.filter(c=>c.alive);
+function provsOf(cid){return G.provinces.filter(p=>!p.sea&&p.owner===cid);}
+function armiesOf(cid){return G.armies.filter(a=>a.owner===cid);}
+function armiesAt(pid){return G.armies.filter(a=>a.prov===pid);}
+function neighbors(pid){const p=PV(pid);return p?p.nb.map(PV).filter(Boolean):[];}
+function landNeighbors(pid){return neighbors(pid).filter(p=>!p.sea);}
+
+/* ================================================================
+   RELATIONSHIPS
+   One record per pair, keyed on the sorted pair. Stance, pact, war and
+   any live war justification all hang off that single record, so two
+   countries can never disagree about what is between them.
+   Nothing outside this section reaches into G.rel to add or delete a row. Reading a
+   row through rel()/relIfAny() is fine and happens all over the UI; creating, mutating
+   or destroying one is this section's job, which is why forgetRelations() lives here
+   rather than inside annexCountry.
+   ================================================================ */
+function relKey(a,b){return a<b?a+":"+b:b+":"+a;}
+function rel(a,b){
+  if(a===b)return null;
+  const k=relKey(a,b);
+  let r=G.rel[k];
+  if(!r)r=G.rel[k]={stance:0,pact:null,war:false,justify:null,lastAsk:-999,truce:0};
+  return r;
+}
+function relIfAny(a,b){return a===b?null:(G.rel[relKey(a,b)]||null);}
+function stanceOf(a,b){const r=relIfAny(a,b);return r?r.stance:0;}
+function nudgeStance(a,b,d){const r=rel(a,b);r.stance=clamp(r.stance+d,-100,100);}
+function atWar(a,b){const r=relIfAny(a,b);return !!(r&&r.war);}
+function pactBetween(a,b){const r=relIfAny(a,b);return r&&r.pact?r.pact:null;}
+function hasPact(a,b,type){const p=pactBetween(a,b);return !!p&&(!type||p.type===type);}
+function alliesOf(cid){
+  const out=[];
+  for(const k in G.rel){
+    const r=G.rel[k];if(!r.pact)continue;
+    const [a,b]=k.split(":").map(Number);
+    if(a===cid&&CO(b)&&CO(b).alive)out.push(b);
+    else if(b===cid&&CO(a)&&CO(a).alive)out.push(a);
+  }
+  return out;
+}
+function formPact(a,b,type){
+  const r=rel(a,b);
+  if(r.war)return false;
+  if(alliesOf(a).length>=MAX_PACTS||alliesOf(b).length>=MAX_PACTS)return false;
+  // Signing with someone who is mid-justification was a free pact that evaporated the
+  // moment their timer ran out, which reads as the game cheating.
+  if(r.justify||r.ready)return false;
+  r.pact={type:type||"defense",since:G.day};
+  r.stance=clamp(r.stance+18,-100,100);
+  return true;
+}
+function breakPact(a,b){
+  const r=rel(a,b);
+  if(!r.pact)return false;
+  r.pact=null;r.stance=clamp(r.stance-45,-100,100);
+  return true;
+}
+/* Declaring war walks the defender's pacts and pulls their allies in. That graph can
+   loop (A defends B, B defends C, C defends A), so the walk carries a visited set.
+   Without it this recurses until the stack dies, which is the classic way a grand
+   strategy game crashes. */
+function declareWar(aggressor,defender,visited){
+  visited=visited||new Set();
+  const key=relKey(aggressor,defender);
+  if(visited.has(key))return;
+  visited.add(key);
+  const A=CO(aggressor),D=CO(defender);
+  if(!A||!D||!A.alive||!D.alive||aggressor===defender)return;
+  const r=rel(aggressor,defender);
+  if(r.war)return;
+  r.war=true;r.pact=null;r.justify=null;r.ready=null;r.stance=-100;r.truce=0;r.warStart=G.day;r.taken={};
+  // everyone watching thinks slightly worse of the aggressor
+  alive().forEach(c=>{if(c.id!==aggressor&&c.id!==defender)nudgeStance(c.id,aggressor,-4);});
+  logAdd(`${A.name} declares war on ${D.name}.`,"war");
+  if(aggressor===G.you||defender===G.you)toast(`War: ${A.name} vs ${D.name}`,"war");
+  // call to arms, both directions, breadth first through the visited set
+  alliesOf(defender).forEach(ally=>{
+    if(ally===aggressor)return;
+    logAdd(`${CO(ally).name} honours its pact with ${D.name}.`,"war");
+    declareWar(aggressor,ally,visited);
+  });
+  // Deliberately one-directional. A defence pact obliges you to defend, not to join
+  // someone else's war of choice. Pulling the aggressor's friends in as well meant one
+  // declaration became a nine-on-one and the victim was annexed in a fortnight.
+}
+/* War score. Provinces actually taken during THIS war, plus a strength read. This is
+   what "demand terms" is argued from, so it has to be a number both sides can see
+   rather than a coin flip. Reset when the war starts. */
+function warTaken(r,cid){return (r.taken&&r.taken[cid])||0;}
+function warScore(me,them){
+  const r=relIfAny(me,them);
+  if(!r)return 0;
+  const land=warTaken(r,me)-warTaken(r,them);
+  const myT=armiesOf(me).reduce((s,x)=>s+x.troops,0);
+  const thT=armiesOf(them).reduce((s,x)=>s+x.troops,0);
+  const force=(myT-thT)/Math.max(20,myT+thT)*6;
+  return land*1.6+force;
+}
+/* The three endings a war is allowed to have. He named the button: demand terms. A war
+   that can only end by total annexation or by a coin flip that moves nothing has no
+   diplomatic payoff, only a map payoff, and that is half a grand strategy game. */
+function termsOffer(from,to,kind,provId){
+  const r=relIfAny(from,to);
+  if(!r||!r.war)return {ok:false,msg:"You are not at war."};
+  const score=warScore(from,to);
+  const len=G.day-(r.warStart||G.day);
+  if(kind==="white"){
+    // both sides stop and keep what they hold
+    const accept=score<1.5&&(len>45||score<-1.5);
+    if(!accept)return {ok:false,msg:`${CO(to).name} thinks it is still winning.`};
+    makePeace(from,to);
+    return {ok:true,msg:"White peace. Everyone keeps what they hold."};
+  }
+  if(kind==="demand"){
+    const p=PV(provId);
+    if(!p||p.owner!==to)return {ok:false,msg:"They do not hold that province."};
+    if(!p.nb.some(n=>PV(n)&&PV(n).owner===from))
+      return {ok:false,msg:"You must border a province to demand it."};
+    if(p.capital)return {ok:false,msg:"No country hands over its capital."};
+    const bar=3.2+(p.city?1.6:0)+p.fort*.5;
+    if(score<bar)return {ok:false,msg:`${CO(to).name} refuses. Beat them harder first.`};
+    setProvinceOwner(p.id,from);
+    armiesAt(p.id).filter(x=>x.owner===to).forEach(x=>{
+      const home=landNeighbors(p.id).find(q=>q.owner===to);
+      if(home)moveArmyTo(x,home.id);else destroyArmy(x,"disbanded by treaty");
+    });
+    makePeace(from,to);
+    logAdd(`${CO(to).name} cedes ${p.name} to ${CO(from).name}.`);
+    return {ok:true,msg:`${p.name} is yours. The war is over.`};
+  }
+  if(kind==="cede"){
+    const p=PV(provId);
+    if(!p||p.owner!==from)return {ok:false,msg:"That is not yours to give."};
+    if(p.capital)return {ok:false,msg:"You cannot give away your capital."};
+    if(score>-1)return {ok:false,msg:`${CO(to).name} wants more than that.`};
+    setProvinceOwner(p.id,to);
+    armiesAt(p.id).filter(x=>x.owner===from).forEach(x=>{
+      const home=landNeighbors(p.id).find(q=>q.owner===from);
+      if(home)moveArmyTo(x,home.id);else destroyArmy(x,"disbanded by treaty");
+    });
+    makePeace(from,to);
+    logAdd(`${CO(from).name} cedes ${p.name} to ${CO(to).name} for peace.`);
+    return {ok:true,msg:`${p.name} is theirs. The war is over.`};
+  }
+  return {ok:false};
+}
+function demandableFrom(me,them){
+  return G.provinces.filter(p=>!p.sea&&p.owner===them&&!p.capital&&
+    p.nb.some(n=>PV(n)&&PV(n).owner===me));
+}
+function makePeace(a,b){
+  const r=rel(a,b);
+  if(!r.war)return false;
+  r.war=false;r.stance=clamp(r.stance+25,-100,60);r.truce=G.day+540;r.warStart=0;
+  r.taken=null;r.demand=null;
+  const A=CO(a),B=CO(b);
+  if(A&&B)logAdd(`${A.name} and ${B.name} sign a ceasefire.`);
+  return true;
+}
+/* Two countries border each other if any province of one touches any province of
+   the other. Recomputed on demand rather than stored, because provinces change hands
+   constantly and a cached border list is a ghost waiting to happen. */
+/* Tearing down every relationship a dead country was part of. This used to be inlined
+   in annexCountry and again in collapseStep, which is two places to forget. */
+function forgetRelations(cid){
+  let n=0;
+  for(const k in G.rel){
+    const [a,b]=k.split(":").map(Number);
+    if(a===cid||b===cid){delete G.rel[k];n++;}
+  }
+  return n;
+}
+function bordersWith(cid){
+  const out=new Set();
+  G.provinces.forEach(p=>{
+    if(p.sea||p.owner!==cid)return;
+    p.nb.forEach(nid=>{const n=PV(nid);if(n&&!n.sea&&n.owner!=null&&n.owner!==cid)out.add(n.owner);});
+  });
+  return [...out];
+}
+
+/* ================================================================
+   WORLD GENERATION
+   ================================================================ */
+let _genTries=0;
+function genWorld(){
+  const usedC=new Set(), usedP=new Set();
+  const provinces=[];
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    const id=r*COLS+c;
+    const edge=(c===0||c===COLS-1||r===0||r===ROWS-1);
+    const sea=rnd()<(edge?SEA_CHANCE*2.4:SEA_CHANCE*.55);
+    const xy=hexXY(c,r);
+    provinces.push({id,col:c,row:r,x:+xy.x.toFixed(1),y:+xy.y.toFixed(1),
+      sea,owner:null,name:sea?"":placeName(usedP),
+      terrain:sea?"plain":pick(["plain","plain","plain","hill","wood","mtn","marsh"]),
+      city:false,capital:false,fort:0,siege:0,
+      pop:sea?0:ri(60,180),nb:neighborCells(c,r)});
+  }
+  const land=provinces.filter(p=>!p.sea);
+  if(land.length<N_COUNTRIES*4)return genWorld();   // freak map, roll again
+
+  const MIN_LAND=7;   // ~89 land hexes over 10 nations averages 8.9, so 7 is a floor
+                      // that can actually be met rather than an aspiration
+  // seed capitals as far apart as a greedy pass manages, then flood fill outward
+  const countries=[],seeds=[];
+  const shuffled=shuffle(land.slice());
+  for(const p of shuffled){
+    if(seeds.length>=N_COUNTRIES)break;
+    if(seeds.every(s=>Math.hypot(s.x-p.x,s.y-p.y)>HEX*2.6))seeds.push(p);
+  }
+  while(seeds.length<N_COUNTRIES){const p=pick(land);if(!seeds.includes(p))seeds.push(p);}
+
+  seeds.forEach((s,i)=>{
+    countries.push({id:i,name:countryName(usedC),color:COUNTRY_COLORS[i%COUNTRY_COLORS.length],
+      ai:true,alive:true,capital:s.id,
+      treasury:ri(3200,5200),workers:ri(160,240),factories:ri(3,6),pp:ri(10,40),
+      tech:Object.fromEntries(TECH.map(t=>[t.k,0])),
+      research:null,build:[],
+      personality:pick(PERSONALITIES).k,homeProvs:0,
+      nextThink:ri(1,6),warWeary:0});
+    s.owner=i;s.capital=true;s.city=true;s.fort=3;
+  });
+
+  /* Fill strictly one hex per country per pass. The old version let a country with a
+     wide frontier claim several hexes in a single pass, which is how a four province
+     nation ended up next to a twenty province one. Round robin equalises by
+     construction, and picking the hex at random keeps the borders ragged. */
+  let unclaimed=land.filter(p=>p.owner==null).length;
+  let guard=0;
+  while(unclaimed>0&&guard++<4000){
+    let progress=false;
+    for(let i=0;i<countries.length&&unclaimed>0;i++){
+      const mine=provinces.filter(p=>!p.sea&&p.owner===i);
+      const open=[];
+      mine.forEach(p=>p.nb.forEach(n=>{
+        const q=provinces[n];
+        if(q&&!q.sea&&q.owner==null&&!open.includes(q))open.push(q);
+      }));
+      if(!open.length)continue;
+      pick(open).owner=i;unclaimed--;progress=true;
+    }
+    if(!progress)break;
+  }
+  // any island the fill could not reach goes to whoever is nearest
+  provinces.forEach(p=>{
+    if(p.sea||p.owner!=null)return;
+    let best=0,bd=1e9;
+    seeds.forEach((s,i)=>{const d=Math.hypot(s.x-p.x,s.y-p.y);if(d<bd){bd=d;best=i;}});
+    p.owner=best;
+  });
+
+  // cities: the capital plus roughly one in three provinces
+  countries.forEach(c=>{
+    const mine=provinces.filter(p=>!p.sea&&p.owner===c.id);
+    shuffle(mine.slice()).slice(0,Math.max(1,Math.round(mine.length/3))).forEach(p=>{
+      if(!p.capital){p.city=true;p.fort=ri(0,1);}
+    });
+  });
+
+  G={ver:SAVE_VER,day:0,you:null,speed:2,
+    provinces,countries,armies:[],generals:[],rel:{},log:[],
+    nextArmy:1,nextGen:1,stats:{battles:0,taken:0,mine:0}};
+  rebuildIndex();
+
+  balanceLand(provinces,countries,MIN_LAND);
+  /* Levelling gets almost every map there, but a country can be enclaved so completely
+     that no neighbour can legally feed it. Generation costs about four milliseconds, so
+     rather than accept a two hex nation on the pick screen, throw the map away and roll
+     another one. The guard is there so a pathological constant can never hang the boot. */
+  {
+    const sizes=countries.map(c=>provinces.filter(p=>!p.sea&&p.owner===c.id).length);
+    if(Math.min(...sizes)<MIN_LAND&&_genTries<60){_genTries++;return genWorld();}
+    _genTries=0;
+  }
+  assignIdentities(provinces,countries);
+  countries.forEach(c=>{c.homeProvs=provsOf(c.id).length;});
+  recolourByAdjacency(countries);
+  // starting armies: two per country, on the capital
+  /* Both starting armies used to sit on an inland capital, so an early war found no
+     adjacent enemy and produced no battles at all. One garrisons the seat, the other is
+     already on the frontier where the game actually happens. */
+  countries.forEach(c=>{
+    const n=provsOf(c.id).length;
+    spawnArmy(c.id,c.capital,ri(24,32)+n*2);
+    const border=provsOf(c.id).filter(p=>p.id!==c.capital&&
+      p.nb.some(x=>PV(x)&&!PV(x).sea&&PV(x).owner!==c.id));
+    const post=border.sort((a,b)=>(b.city?1:0)-(a.city?1:0)||b.fort-a.fort)[0];
+    spawnArmy(c.id,post?post.id:c.capital,ri(24,32)+n*2);
+  });
+  // starting opinions: neighbours start slightly wary, distant countries indifferent
+  countries.forEach(a=>bordersWith(a.id).forEach(b=>{if(a.id<b)rel(a.id,b).stance=ri(-25,10);}));
+  return G;
+}
+
+/* The pick screen shows the province count and a twelve-year-old taps the colour they
+   like. A four-hex start is not a difficulty setting, it is a trap with a pretty
+   swatch, so the smallest nations are topped up from their largest neighbour until
+   every seat at the table is playable. */
+function balanceLand(provinces,countries,minLand){
+  const count=id=>provinces.filter(p=>!p.sea&&p.owner===id).length;
+  /* A country boxed in by its neighbours stops growing during the fill while one with
+     open space runs away, so round robin alone still produced a four hex nation beside
+     a seventeen hex one. This levels afterwards by repeatedly moving a single border
+     hex from the largest country to the smallest country it touches. Because the
+     transfer only ever goes to an ADJACENT smaller neighbour, land chains down the map
+     from the fat country to the thin one over successive passes instead of teleporting.
+     Capitals never move, and a donor never drops below the floor. */
+  for(let guard=0;guard<900;guard++){
+    const sizes=countries.map(c=>count(c.id));
+    const hi=sizes.indexOf(Math.max(...sizes));
+    if(Math.max(...sizes)-Math.min(...sizes)<=3)break;
+    let best=null;
+    provinces.forEach(p=>{
+      if(p.sea||p.owner!==hi||p.capital)return;
+      p.nb.forEach(n=>{
+        const q=provinces[n];
+        if(!q||q.sea||q.owner==null||q.owner===hi)return;
+        if(sizes[q.owner]>=sizes[hi]-1)return;
+        if(!best||sizes[q.owner]<sizes[best.to])best={p,to:q.owner};
+      });
+    });
+    if(!best)break;
+    if(count(hi)<=minLand)break;
+    best.p.owner=best.to;
+  }
+}
+/* Match each generated country to the authored nation its land actually looks like, so
+   the mountain nation ends up in the mountains and the blurb is not a lie. */
+function assignIdentities(provinces,countries){
+  const sizes=countries.map(c=>provinces.filter(p=>!p.sea&&p.owner===c.id).length);
+  const big=Math.max(...sizes,1);
+  const profile=c=>{
+    const mine=provinces.filter(p=>!p.sea&&p.owner===c.id);
+    const n=mine.length||1;
+    const share=t=>mine.filter(p=>p.terrain===t).length/n;
+    const coast=mine.filter(p=>p.nb.some(x=>provinces[x]&&provinces[x].sea)).length/n;
+    return {mtn:share("mtn"),hill:share("hill"),plain:share("plain"),wood:share("wood"),
+      marsh:share("marsh"),city:mine.filter(p=>p.city).length/n,coast,
+      size:n/big,small:1-n/big};
+  };
+  const profiles=countries.map(profile);
+  const pairs=[];
+  countries.forEach((c,ci)=>NATIONS.forEach((nat,ni)=>{
+    let sc=0;for(const k in nat.want)sc+=nat.want[k]*(profiles[ci][k]||0);
+    pairs.push({ci,ni,sc});
+  }));
+  pairs.sort((a,b)=>b.sc-a.sc);
+  const usedC=new Set(),usedN=new Set();
+  pairs.forEach(({ci,ni})=>{
+    if(usedC.has(ci)||usedN.has(ni))return;
+    usedC.add(ci);usedN.add(ni);
+    applyIdentity(countries[ci],ni);
+  });
+  countries.forEach((c,i)=>{if(c.nat==null)applyIdentity(c,i%NATIONS.length);});
+}
+function applyIdentity(c,ni){
+  const n=NATIONS[ni];if(!n)return;
+  c.nat=ni;c.name=n.name;c.blurb=n.blurb;c.bonus=n.bonus;
+}
+const bonusOf=(c,k)=>(c&&c.bonus&&c.bonus[k])||0;
+
+/* Greedy graph colouring over the country adjacency graph. Ten colours for ten
+   countries means a perfect assignment is not guaranteed, so this maximises the
+   minimum hue distance to each already-coloured neighbour instead of insisting. */
+function hueOf(hex){
+  const n=parseInt(hex.slice(1),16);
+  const r=((n>>16)&255)/255,g=((n>>8)&255)/255,b=(n&255)/255;
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
+  if(!d)return 0;
+  let h=mx===r?((g-b)/d)%6:mx===g?(b-r)/d+2:(r-g)/d+4;
+  return (h*60+360)%360;
+}
+function hueGap(a,b){const d=Math.abs(hueOf(a)-hueOf(b));return Math.min(d,360-d);}
+function recolourByAdjacency(countries){
+  const adj=countries.map(c=>new Set(bordersWith(c.id)));
+  const pool=COUNTRY_COLORS.slice();
+  const order=countries.map((c,i)=>i).sort((a,b)=>adj[b].size-adj[a].size);
+  const taken=new Array(countries.length).fill(null);
+  order.forEach(i=>{
+    let best=null,bestScore=-1;
+    pool.forEach(col=>{
+      if(taken.includes(col))return;
+      let worst=999;
+      adj[i].forEach(nb=>{if(taken[nb])worst=Math.min(worst,hueGap(col,taken[nb]));});
+      if(worst>bestScore){bestScore=worst;best=col;}
+    });
+    taken[i]=best||pool[i%pool.length];
+  });
+  countries.forEach((c,i)=>{c.color=taken[i];});
+}
+
+/* ================================================================
+   WORLD MUTATION API
+   Every change to who owns what and where an army stands goes through here.
+   The football game learned this the hard way: hand-rolled squad edits left
+   1,200 players pointing at clubs that no longer existed. Same rule, same reason.
+   ================================================================ */
+function newGeneral(){
+  const g={id:G.nextGen++,name:genName(),skill:ri(1,5)};
+  G.generals.push(g);return g;
+}
+function spawnArmy(cid,pid,troops){
+  const g=newGeneral();
+  const a={id:G.nextArmy++,owner:cid,prov:pid,troops,max:troops,pool:0,
+    gen:g.id,stance:"defend",broken:false,moving:null,eta:0,target:null};
+  G.armies.push(a);ARMY.set(a.id,a);
+  return a;
+}
+/* Destroying an army also releases its general. Missing this is the exact shape of
+   the academy ghost bug: an object that still exists, still referenced, invisible. */
+function destroyArmy(a,reason){
+  if(!a)return;
+  const i=G.armies.indexOf(a);if(i<0)return;
+  G.armies.splice(i,1);ARMY.delete(a.id);
+  const gi=G.generals.findIndex(g=>g.id===a.gen);
+  if(gi>=0)G.generals.splice(gi,1);
+  if(a.owner===G.you)toast(`Army lost${reason?" — "+reason:""}.`,"war");
+}
+function moveArmyTo(a,pid){
+  if(!a||!PV(pid)||PV(pid).sea)return false;
+  a.prov=pid;a.moving=null;a.eta=0;
+  return true;
+}
+/* The capital flag is cleared HERE, where ownership changes, and nowhere else.
+   annexCountry only ever cleared stars on hexes still owned by the loser, and the hex
+   you just took is already yours, so the star came with it. The winner then had two
+   capitals, and an enemy retaking that hex would read wasCap===true and capitulate its
+   current owner. One flag stored in two places (p.capital and c.capital), disagreeing
+   after the first successful siege. Same shape as the academy ghost. */
+function setProvinceOwner(pid,cid){
+  const p=PV(pid);
+  if(!p||p.sea)return;
+  p.owner=cid;p.capital=false;p.fort=Math.max(0,p.fort-1);p.siege=0;
+}
+/* A country falls when its capital is taken. Everything it owned transfers, every
+   army it had dies, and every relationship it was part of is torn down. Leaving a
+   single stale record here is what makes a save quietly rot twenty hours later. */
+function annexCountry(loserId,winnerId){
+  const L=CO(loserId),W=CO(winnerId);
+  if(!L||!L.alive)return;
+  L.alive=false;
+  G.provinces.forEach(p=>{if(!p.sea&&p.owner===loserId){p.owner=winnerId;p.capital=false;p.siege=0;}});
+  armiesOf(loserId).slice().forEach(a=>destroyArmy(a));
+  forgetRelations(loserId);
+  L.treasury=0;L.workers=0;L.factories=0;L.build=[];L.research=null;
+  logAdd(`${L.name} has fallen. ${W?W.name:"Its conqueror"} takes everything.`,"war");
+  if(loserId===G.you){G.defeat=true;toast("Your capital has fallen.","war");}
+  else if(winnerId===G.you)toast(`${L.name} annexed.`,"good");
+  else toast(`${L.name} has fallen.`,"war");
+  alive().forEach(c=>{if(c.id!==winnerId)nudgeStance(c.id,winnerId,-14);});
+}
+function logAdd(text,kind){
+  G.log.unshift({d:G.day,t:text,k:kind||""});
+  if(G.log.length>260)G.log.length=260;
+}
+
+/* ================================================================
+   ECONOMY
+   Four resources, each with a different job:
+     money    spent on research, forts and recruitment
+     workers  consumed by recruitment, replaced slowly by population
+     factories decide how fast recruitment and building actually run
+     political points buy diplomacy, and only diplomacy
+   ================================================================ */
+function incomeOf(cid){
+  const c=CO(cid);if(!c)return 0;
+  let m=0;
+  provsOf(cid).forEach(p=>{
+    m+=p.pop*.5*TERRAIN[p.terrain].income*(p.city?1.5:1);
+  });
+  return Math.round(m*(1+c.tech.admin*.09)*(1+bonusOf(c,"income")));
+}
+function workerGain(cid){
+  const c=CO(cid);if(!c)return 0;
+  return Math.round(provsOf(cid).reduce((a,p)=>a+p.pop,0)*.0045);
+}
+function upkeepOf(cid){
+  // Armies drain money every single day. A recurring drain is a far stronger sink
+  // than any one-off purchase, which is the one economic lesson that carried over
+  // from the football game intact.
+  const c=CO(cid);if(!c)return 0;
+  return Math.round(armiesOf(cid).reduce((a,x)=>a+x.troops*2.2,0)+provsOf(cid).length*6);
+}
+function netOf(cid){return incomeOf(cid)-upkeepOf(cid);}
+function ppGain(cid){
+  const c=CO(cid);if(!c)return 0;
+  return +((0.55+provsOf(cid).length*.045+c.factories*.03)*(1+bonusOf(c,"politics"))).toFixed(2);
+}
+function buildRate(cid){
+  const c=CO(cid);if(!c)return 1;
+  return c.factories*(1+c.tech.industry*.12)*(1+bonusOf(c,"industry"));
+}
+function recruitCost(cid){
+  const c=CO(cid);
+  const n=armiesOf(cid).length;
+  return {money:Math.round(900*(1+n*.2)),workers:Math.round(46*(1+n*.12))};
+}
+function fortCost(p){return Math.round(340*(1+p.fort*.75));}
+
+/* ================================================================
+   COMBAT
+   Battles do not resolve in one roll. Two armies in adjacent provinces chip at
+   each other every day, and the arrow between them only reports who is chipping
+   faster. That is the single biggest difference from the football engine, and it
+   is a smaller change than it sounds: same weighted dice, run small and often
+   instead of once and large.
+   ================================================================ */
+function generalOf(a){return G.generals.find(g=>g.id===a.gen)||{name:"—",skill:1};}
+function attackPower(a){
+  const c=CO(a.owner);if(!c)return 0;
+  const g=generalOf(a);
+  let s=a.troops*(1+c.tech.infantry*.10);
+  s*=(1+c.tech.armor*.09);
+  s*=(1+g.skill*.05);
+  s*=a.stance==="attack"?1.18:.72;
+  if(a.broken)s*=.4;
+  return s;
+}
+function defencePower(a,inProv){
+  const c=CO(a.owner);if(!c)return 0;
+  const g=generalOf(a);
+  let s=a.troops*(1+c.tech.infantry*.10);
+  s*=(1+c.tech.at*.07);
+  s*=(1+g.skill*.05);
+  s*=a.stance==="defend"?1.22:.88;
+  if(a.broken)s*=.4;
+  const p=inProv||PV(a.prov);
+  if(p){
+    s*=TERRAIN[p.terrain].def;
+    s*=1+p.fort*.2+(p.owner===a.owner?.15+c.tech.fort*.06+bonusOf(c,"defence"):0);
+    // A capital is the one province a country actually digs in around. Making it merely
+    // a bit tougher meant capitals fell several times a year and the headline event of
+    // the game became routine. It has to be a wall.
+    if(p.capital)s*=2.1;
+  }
+  return s;
+}
+/* One day of one engagement, fought symmetrically.
+   Two armies of countries at war standing next to each other FIGHT. Stance tilts the
+   dice; it is not permission to fight. v1 only chipped when someone had pressed Attack,
+   so two hostile armies could sit on a border on Hold for months with no arrow and no
+   losses. That made the Army tab a reminder to press a button rather than a front line.
+   Intensity: both dug in is a skirmish, one pressing is a battle, both pressing is a
+   bloodbath. Losses scale with the smaller army, so the big side cannot erase the small
+   one in a day and a fortified border can hold. */
+function isPressing(self,other){
+  return !self.broken&&self.stance==="attack"&&self.moving==null&&
+    (self.target===other.prov||self.target==null);
+}
+function sidePower(self,other,pressing){
+  return pressing?attackPower(self):defencePower(self);
+}
+function battleTick(a,b){
+  const aPress=isPressing(a,b), bPress=isPressing(b,a);
+  const ap=sidePower(a,b,aPress), bp=sidePower(b,a,bPress);
+  const total=ap+bp||1;
+  const intensity=(aPress&&bPress)?1.15:(aPress||bPress)?1:.34;
+  const width=Math.min(a.troops,b.troops);
+  const ca=CO(a.owner), cb=CO(b.owner);
+  const airA=1+(ca?ca.tech.air*.05:0), airB=1+(cb?cb.tech.air*.05:0);
+  // A broken army is scattered, not standing in a line. It stops absorbing full damage,
+  // which is what makes "walk into the city to finish them" the way it dies rather than
+  // plain attrition quietly deleting it while nobody is looking.
+  const bLoss=Math.max(1,Math.round(width*.038*(ap/total)*2*intensity*airA*(.7+rnd()*.6)*(b.broken?.45:1)));
+  const aLoss=Math.max(1,Math.round(width*.038*(bp/total)*2*intensity*airB*(.7+rnd()*.6)*(a.broken?.45:1)));
+  a.troops=Math.max(0,a.troops-aLoss);
+  b.troops=Math.max(0,b.troops-bLoss);
+  a._win=bLoss>aLoss; b._win=aLoss>bLoss;
+  a._fighting=true; b._fighting=true;
+  a._quiet=b._quiet=!aPress&&!bPress;
+  checkBroken(a);checkBroken(b);
+  return {aLoss,bLoss};
+}
+function checkBroken(a){
+  if(a.troops<=0){destroyArmy(a,"wiped out");return;}
+  if(!a.broken&&a.troops<=a.max*BROKEN_AT){
+    a.broken=true;a.stance="defend";a.target=null;a.moving=null;a.eta=0;
+    if(a.owner===G.you)toast(`${generalOf(a).name}'s army is broken.`,"war");
+  }
+  if(a.broken&&a.troops>a.max*BROKEN_AT*2)a.broken=false;   // rallied
+}
+/* Engagements are derived every tick from where armies actually stand, and this
+   function is pure: the map calls it on every repaint, so it must not mutate anything.
+   Each army fights its single strongest adjacent enemy. Letting one stack fight three
+   neighbours at once turned a surrounded army into paste in four days and made the
+   arrows unreadable. */
+function engagements(){
+  const seen=new Set(), out=[];
+  for(const a of G.armies){
+    if(a.moving!=null)continue;
+    let best=null;
+    for(const q of neighbors(a.prov)){
+      if(q.sea)continue;
+      for(const b of armiesAt(q.id)){
+        if(b.owner===a.owner||b.moving!=null)continue;
+        if(!atWar(a.owner,b.owner))continue;
+        if(!best||b.troops>best.troops)best=b;
+      }
+    }
+    if(!best)continue;
+    const key=a.id<best.id?a.id+":"+best.id:best.id+":"+a.id;
+    if(seen.has(key))continue;
+    seen.add(key);
+    // orient the pair so the player's army is the origin of its own arrow
+    out.push(best.owner===G.you?{att:best,def:a}:{att:a,def:best});
+  }
+  return out;
+}
+
+/* ================================================================
+   ORDERS
+   ================================================================ */
+/* Land provinces this army could reach by sea. Armies never stand on water, so the
+   integrity rule "no army at sea" survives untouched: a crossing is a slow move between
+   two coasts that share a stretch of water. Range is the navy tech level. */
+function seaReach(fromPid,cid){
+  const c=CO(cid);
+  const lvl=c?(c.tech.navy||0):0;
+  if(!lvl)return [];
+  const from=PV(fromPid);
+  if(!from)return [];
+  let frontier=from.nb.map(PV).filter(q=>q&&q.sea);
+  const seenSea=new Set(frontier.map(q=>q.id));
+  const out=new Set();
+  for(let hop=0;hop<lvl;hop++){
+    const next=[];
+    frontier.forEach(sq=>sq.nb.map(PV).forEach(q=>{
+      if(!q)return;
+      if(q.sea){if(!seenSea.has(q.id)){seenSea.add(q.id);next.push(q);}}
+      else if(q.id!==fromPid&&!from.nb.includes(q.id))out.add(q.id);
+    }));
+    frontier=next;
+    if(!frontier.length)break;
+  }
+  return [...out];
+}
+function crossingDays(cid){
+  const c=CO(cid);
+  return Math.max(3,7-(c?(c.tech.navy||0):0)-(c?(c.tech.logistics||0):0));
+}
+function canMove(a,pid){
+  if(!a||a.moving!=null)return false;
+  const p=PV(pid);
+  if(!p||p.sea)return false;
+  const bySea=!PV(a.prov).nb.includes(pid);
+  if(bySea&&!seaReach(a.prov,a.owner).includes(pid))return false;
+  if(p.owner!=null&&p.owner!==a.owner&&!atWar(a.owner,p.owner))return false;
+  // may not slip past an enemy army into the ground it holds, unless falling back
+  // into your own territory
+  if(p.owner!==a.owner&&zocBlocked(p,a.owner))return false;
+  return true;
+}
+function orderMove(a,pid){
+  if(!canMove(a,pid))return false;
+  const c=CO(a.owner);
+  const bySea=!PV(a.prov).nb.includes(pid);
+  a.moving=pid;
+  a.eta=bySea?crossingDays(a.owner):Math.max(1,MOVE_DAYS-(c?c.tech.logistics:0)*.5|0);
+  a.stance="defend";a.target=null;
+  return true;
+}
+function orderAttack(a,pid){
+  if(!a||a.broken||a.moving!=null)return false;
+  const p=PV(pid);
+  if(!p||p.sea||!PV(a.prov).nb.includes(pid))return false;
+  if(p.owner==null||p.owner===a.owner)return false;
+  if(!atWar(a.owner,p.owner))return false;
+  a.stance="attack";a.target=pid;
+  return true;
+}
+function orderHold(a){if(!a)return;a.stance="defend";a.target=null;a.moving=null;a.eta=0;}
+/* A general was a name and a number the player could not touch. One button, one price,
+   one reroll. He asked for generals as a tab; this is the smallest thing that makes the
+   word mean something. */
+const GENERAL_PP=25;
+function replaceGeneral(cid,armyId){
+  const c=CO(cid),a=AR(armyId);
+  if(!c||!a||a.owner!==cid)return {ok:false};
+  if(c.pp<GENERAL_PP)return {ok:false,msg:`Needs ${GENERAL_PP} political points.`};
+  c.pp-=GENERAL_PP;
+  const gi=G.generals.findIndex(g=>g.id===a.gen);
+  if(gi>=0)G.generals.splice(gi,1);
+  const g=newGeneral();a.gen=g.id;
+  return {ok:true,name:g.name,skill:g.skill};
+}
+function orderRecruit(cid,pid){
+  const c=CO(cid),p=PV(pid);
+  if(!c||!p||p.owner!==cid||!p.city)return {ok:false,msg:"Recruit in a city you hold."};
+  if(armiesOf(cid).length+c.build.filter(b=>b.kind==="army").length>=ARMY_MAX)
+    return {ok:false,msg:`No headquarters free. ${ARMY_MAX} armies is the cap.`};
+  const cost=recruitCost(cid);
+  if(c.treasury<cost.money)return {ok:false,msg:"Not enough money."};
+  if(c.workers<cost.workers)return {ok:false,msg:"Not enough workers."};
+  c.treasury-=cost.money;c.workers-=cost.workers;
+  c.build.push({kind:"army",prov:pid,left:RECRUIT_DAYS*8,
+    size:Math.round(ri(20,28)*(1+bonusOf(c,"recruit")))});
+  return {ok:true};
+}
+/* Reinforce is the verb he actually described: you feed manpower into a unit already
+   at the front, you do not only conjure whole new stacks. It raises the ceiling as well
+   as the count, so a veteran army grows rather than capping at its birth size. */
+function reinforceCost(a){
+  return {money:Math.round(26*Math.max(6,a.max-a.troops+6)),
+          workers:Math.round(1.3*Math.max(6,a.max-a.troops+6))};
+}
+function orderReinforce(cid,armyId){
+  const c=CO(cid),a=AR(armyId);
+  if(!c||!a||a.owner!==cid)return {ok:false,msg:"No such army."};
+  const p=PV(a.prov);
+  if(!p||p.owner!==cid)return {ok:false,msg:"Reinforce in your own territory."};
+  if(a.troops>=a.max+REINFORCE_OVER)return {ok:false,msg:"This army is at full strength."};
+  const cost=reinforceCost(a);
+  if(c.treasury<cost.money)return {ok:false,msg:"Not enough money."};
+  if(c.workers<cost.workers)return {ok:false,msg:"Not enough workers."};
+  c.treasury-=cost.money;c.workers-=cost.workers;
+  const gain=Math.max(4,Math.round((a.max-a.troops)*.6)||6);
+  a.troops+=gain;
+  a.max=Math.max(a.max,a.troops);
+  if(a.broken&&a.troops>a.max*BROKEN_AT*2)a.broken=false;
+  return {ok:true,gain};
+}
+function orderFortify(cid,pid){
+  const c=CO(cid),p=PV(pid);
+  if(!c||!p||p.owner!==cid)return {ok:false,msg:"Fortify a province you hold."};
+  if(p.fort>=4)return {ok:false,msg:"Already fortified as far as it goes."};
+  const cost=fortCost(p);
+  if(c.treasury<cost)return {ok:false,msg:"Not enough money."};
+  c.treasury-=cost;p.fort++;
+  return {ok:true};
+}
+function orderFactory(cid){
+  const c=CO(cid);if(!c)return {ok:false};
+  const cost=Math.round(900*(1+c.factories*.22));
+  if(c.treasury<cost)return {ok:false,msg:"Not enough money."};
+  c.treasury-=cost;c.build.push({kind:"factory",left:RECRUIT_DAYS*10});
+  return {ok:true};
+}
+function factoryCost(c){return Math.round(900*(1+c.factories*.22));}
+function techLocked(c,t){
+  if(!t.req)return null;
+  for(const k in t.req)
+    if((c.tech[k]||0)<t.req[k])return `${TECH_BY[k].label} ${t.req[k]}`;
+  return null;
+}
+function startResearch(cid,key){
+  const c=CO(cid),t=TECH_BY[key];
+  if(!c||!t)return {ok:false};
+  if(c.research)return {ok:false,msg:"One project at a time."};
+  if(c.tech[key]>=t.max)return {ok:false,msg:"Fully researched."};
+  const lock=techLocked(c,t);
+  if(lock)return {ok:false,msg:`Needs ${lock} first.`};
+  const cost=Math.round(t.cost*(1+c.tech[key]*.55));
+  if(c.treasury<cost)return {ok:false,msg:"Not enough money."};
+  c.treasury-=cost;
+  const days=Math.max(4,Math.round(t.days/(1+bonusOf(c,"research"))));
+  c.research={k:key,left:days,total:days};
+  return {ok:true};
+}
+function techCost(c,t){return Math.round(t.cost*(1+c.tech[t.k]*.55));}
+
+/* ---- diplomacy orders ---- */
+/* Both directions run through the same stance number, so the AI can never propose
+   an alliance it would have refused coming the other way. */
+function allianceOdds(from,to){
+  const c=CO(to);if(!c)return 0;
+  const r=rel(from,to);
+  if(r.war||r.pact||r.justify||r.ready)return 0;
+  if(alliesOf(from).length>=MAX_PACTS||alliesOf(to).length>=MAX_PACTS)return 0;
+  const p=PERSONALITIES.find(x=>x.k===c.personality)||PERSONALITIES[2];
+  let odds=.5+r.stance/200;                             // stance is the spine
+  odds*=p.ally;                                          // personality tilts it
+  const mine=provsOf(from).length, theirs=provsOf(to).length;
+  odds*=theirs>mine*1.6?.75:mine>theirs*1.6?1.2:1;      // the weak seek the strong
+  const enemies=bordersWith(to).filter(b=>atWar(to,b));
+  if(enemies.length)odds*=1.3;                           // a country at war wants friends
+  if(enemies.includes(from))return 0;
+  alliesOf(to).forEach(a=>{if(atWar(from,a))odds*=.25;});// not while you fight my friend
+  if(G.day-r.lastAsk<60)odds*=.35;                       // stop asking every week
+  return clamp(odds,0,.95);
+}
+function proposeAlliance(from,to){
+  const r=rel(from,to);
+  const odds=allianceOdds(from,to);
+  r.lastAsk=G.day;
+  if(rnd()<odds){formPact(from,to,"defense");return true;}
+  r.stance=clamp(r.stance-4,-100,100);
+  return false;
+}
+function startJustify(from,to){
+  const r=rel(from,to);
+  const c=CO(from);
+  if(!c||r.war||r.justify)return {ok:false,msg:"Nothing to justify."};
+  // The write-up said nobody starts a war in the first year. It was gated on the AI
+  // only, so the player could declare on day one and the sentence was a lie.
+  if(G.day<OPENING_PEACE)
+    return {ok:false,msg:`The world is at peace until ${dateStr(OPENING_PEACE)}.`};
+  if(r.truce>G.day)return {ok:false,msg:"A truce is still in force."};
+  if(!bordersWith(from).includes(to))return {ok:false,msg:"You share no border."};
+  const target=CO(to);
+  const cost=Math.round(JUSTIFY_PP*(1+(target?target.tech.nuke:0)*.7));
+  if(c.pp<cost)return {ok:false,msg:`Needs ${cost} political points.`};
+  c.pp-=cost;
+  r.justify={by:from,until:G.day+JUSTIFY_DAYS};
+  r.stance=clamp(r.stance-30,-100,100);
+  logAdd(`${c.name} begins justifying a war against ${target.name}.`,"war");
+  if(to===G.you)toast(`${c.name} is justifying a war on you.`,"war");
+  return {ok:true};
+}
+
+/* ================================================================
+   THE TICK
+   One day. The order of these steps is the contract: money before spending,
+   movement before combat, combat before capture, capture before collapse.
+   Anything reordered here changes the game even though nothing else moves.
+   ================================================================ */
+function tick(){
+  if(!G||G.you==null||G.defeat||G.victory)return;
+  G.day++;
+  economyStep();
+  researchStep();
+  buildStep();
+  justifyStep();
+  aiStep();
+  movementStep();
+  combatStep();
+  replenishStep();
+  captureStep();
+  siegeDecay();
+  collapseStep();
+  if(G.day%20===0)integrityGuard("tick");
+  if(G.day%10===0)saveGame(true);
+}
+function economyStep(){
+  alive().forEach(c=>{
+    c.treasury+=Math.round(netOf(c.id)/7);
+    c.workers=Math.min(9999,Math.round((c.workers+workerGain(c.id)/7)*10)/10);
+    c.pp=Math.min(400,c.pp+ppGain(c.id)/7);
+    if(c.treasury<0){
+      // Insolvency does not bankrupt you, it starves the army. Troops desert.
+      const arms=armiesOf(c.id);
+      if(arms.length){
+        const a=pick(arms);a.troops=Math.max(0,a.troops-1);checkBroken(a);
+        if(c.id===G.you&&G.day%10===0)toast("Treasury empty. Troops are deserting.","war");
+      }
+      c.treasury=Math.min(0,c.treasury+30);
+    }
+  });
+}
+function researchStep(){
+  alive().forEach(c=>{
+    if(!c.research)return;
+    c.research.left-=1;
+    if(c.research.left<=0){
+      const t=TECH_BY[c.research.k];
+      c.tech[c.research.k]=Math.min(t.max,c.tech[c.research.k]+1);
+      if(c.id===G.you)toast(`${t.label} level ${c.tech[c.research.k]} complete.`,"good");
+      c.research=null;
+    }
+  });
+}
+function buildStep(){
+  alive().forEach(c=>{
+    if(!c.build.length)return;
+    const rate=buildRate(c.id);
+    const b=c.build[0];
+    b.left-=rate;
+    if(b.left<=0){
+      c.build.shift();
+      if(b.kind==="army"){
+        const p=PV(b.prov);
+        const dest=(p&&!p.sea&&p.owner===c.id)?b.prov:(provsOf(c.id)[0]||{}).id;
+        if(dest!=null){
+          spawnArmy(c.id,dest,b.size);
+          if(c.id===G.you)toast(`New army raised at ${PV(dest).name}.`,"good");
+        }
+      }else{
+        c.factories++;
+        if(c.id===G.you)toast("Factory finished.","good");
+      }
+    }
+  });
+}
+function justifyStep(){
+  for(const k in G.rel){
+    const r=G.rel[k];
+    // offers and demands carry an expiry, so they have to actually expire
+    if(r.offer&&G.day>r.offer.until)r.offer=null;
+    if(r.demand&&G.day>r.demand.until)r.demand=null;
+    if(!r.justify)continue;
+    if(G.day>=r.justify.until){
+      const [a,b]=k.split(":").map(Number);
+      const by=r.justify.by, on=(by===a?b:a);
+      r.justify=null;
+      const A=CO(by),B=CO(on);
+      if(!A||!B||!A.alive||!B.alive)continue;
+      // Neither side auto-fires. The player gets a Declare button; the AI gets one more
+      // decision, so a pact signed or an army lost during the twenty days can still call
+      // the whole thing off.
+      r.ready={by,until:G.day+90};
+      if(by===G.you)toast(`War on ${B.name} is now justified.`,"war");
+      else if(on===G.you)toast(`${A.name} has finished justifying its war.`,"war");
+    }
+    if(r.ready&&G.day>r.ready.until)r.ready=null;
+  }
+}
+/* Armies heal in their own territory. In v1 troops only ever fell, so a war in year
+   twelve was two eight-man remnants shoving each other and upkeep solved itself the
+   wrong way. This is a trickle, not a manpower pool: it rewards pulling a battered
+   army home rather than feeding it. */
+function replenishStep(){
+  G.armies.forEach(a=>{
+    if(a.troops>=a.max||a._fighting)return;
+    const p=PV(a.prov);
+    if(!p||p.owner!==a.owner)return;
+    const c=CO(a.owner);
+    if(!c||c.treasury<0)return;
+    a.pool=(a.pool||0)+REPLENISH*(p.city?1.6:1)*(1+(c.tech.industry||0)*.08)*(1+bonusOf(c,"replenish"));
+    while(a.pool>=1&&a.troops<a.max){a.pool-=1;a.troops++;}
+    if(a.broken&&a.troops>a.max*BROKEN_AT*2)a.broken=false;
+  });
+}
+function movementStep(){
+  G.armies.slice().forEach(a=>{
+    if(a.moving==null)return;
+    a.eta-=1;
+    if(a.eta>0)return;
+    const dest=PV(a.moving);
+    if(!dest||dest.sea){a.moving=null;a.eta=0;return;}
+    // an enemy army standing there blocks the move and starts a fight instead
+    const hostile=armiesAt(a.moving).filter(x=>x.owner!==a.owner&&atWar(a.owner,x.owner));
+    if(hostile.length){
+      const to=a.moving;a.moving=null;a.eta=0;
+      if(!a.broken){a.stance="attack";a.target=to;}
+      return;
+    }
+    moveArmyTo(a,a.moving);
+  });
+}
+function combatStep(){
+  G.armies.forEach(a=>{a._fighting=false;});
+  // Stale orders are cleared here rather than inside engagements(), because the map
+  // calls engagements() on every repaint and a paint must never change the world.
+  G.armies.forEach(a=>{
+    if(a.target==null)return;
+    const tp=PV(a.target);
+    if(!tp||tp.sea||tp.owner===a.owner||!PV(a.prov).nb.includes(a.target)){
+      a.target=null;if(a.stance==="attack")a.stance="defend";
+    }
+  });
+  engagements().forEach(({att,def})=>{
+    if(!ARMY.has(att.id)||!ARMY.has(def.id))return;
+    battleTick(att,def);
+    G.stats.battles++;
+  });
+}
+/* Capture is deliberately a separate step from combat, exactly as the reference game
+   plays it: breaking an army marks it, and someone still has to walk into the city.
+   That gap is where the tension lives. */
+function captureStep(){
+  G.armies.slice().forEach(a=>{
+    if(a.broken||a.stance!=="attack"||a.target==null)return;
+    const p=PV(a.target);
+    if(!p||p.sea||p.owner===a.owner)return;
+    if(!atWar(a.owner,p.owner))return;
+    const holders=armiesAt(a.target).filter(d=>d.owner!==a.owner&&!d.broken);
+    if(holders.length)return;                       // someone still standing, keep fighting
+    // Walls hold even with nobody behind them. Without this a fortified capital with no
+    // army in it fell to a single unopposed walk-in, which made every fort on the map
+    // decoration and turned capitals falling into a weekly event.
+    const need=siegeNeed(p);
+    if(need>0){
+      p.siege=Math.min(need,(p.siege||0)+attackPower(a)/12);
+      if(p.siege<need)return;
+    }
+    // The siege is done, but a relief army next door still denies the ground.
+    if(zocBlocked(p,a.owner))return;
+    // walk in: any broken enemy sitting here is destroyed
+    armiesAt(a.target).filter(d=>d.owner!==a.owner).forEach(d=>destroyArmy(d,"overrun"));
+    const loser=p.owner, wasCap=p.capital;
+    setProvinceOwner(a.target,a.owner);
+    moveArmyTo(a,a.target);
+    a.stance="defend";a.target=null;
+    G.stats.taken++;
+    if(a.owner===G.you)G.stats.mine=(G.stats.mine||0)+1;
+    {const wr=relIfAny(a.owner,loser);
+     if(wr&&wr.war){wr.taken=wr.taken||{};wr.taken[a.owner]=(wr.taken[a.owner]||0)+1;}}
+    if(a.owner===G.you)toast(`${p.name} taken.`,"good");
+    else if(loser===G.you)toast(`${p.name} lost.`,"war");
+    logAdd(`${CO(a.owner).name} takes ${p.name} from ${CO(loser)?CO(loser).name:"nobody"}.`,"war");
+    if(wasCap&&loser!=null)capitalFell(loser,a.owner);
+  });
+}
+/* The reference game's rule with one condition on it: take the capital, take the
+   country. The condition is that the country must already have lost half its land.
+   Otherwise the government relocates and the war goes on. */
+/* One writer for the seat of government, so p.capital and c.capital cannot drift. */
+function setCapital(cid,pid){
+  const c=CO(cid),p=PV(pid);
+  if(!c||!p||p.sea||p.owner!==cid)return false;
+  G.provinces.forEach(q=>{if(q.owner===cid)q.capital=false;});
+  p.capital=true;p.city=true;c.capital=p.id;
+  return true;
+}
+function capitalFell(loserId,winnerId){
+  const L=CO(loserId);
+  if(!L||!L.alive)return;
+  const left=provsOf(loserId).length;
+  if(left>0&&left>=Math.ceil((L.homeProvs||left)*CAPITULATE_AT)){
+    // Relocate as far from the fighting as the remaining land allows. Picking the
+    // biggest city instead put the new seat straight back on the front line, and the
+    // capital then fell again every few weeks. Distance first, size second.
+    const hostile=provsOf(loserId).length?G.provinces.filter(q=>!q.sea&&q.owner!=null&&
+      q.owner!==loserId&&atWar(loserId,q.owner)):[];
+    const seat=provsOf(loserId).map(q=>{
+      let d=99;hostile.forEach(h=>{d=Math.min(d,Math.hypot(h.x-q.x,h.y-q.y)/HEX);});
+      return {q,score:d*2+(q.city?3:0)+q.pop/300};
+    }).sort((x,y)=>y.score-x.score)[0].q;
+    setCapital(loserId,seat.id);seat.fort=Math.max(seat.fort,2);
+    logAdd(`${L.name} moves its capital to ${seat.name} and fights on.`,"war");
+    if(loserId===G.you)toast(`Capital lost. Government moves to ${seat.name}.`,"war");
+    else if(winnerId===G.you)toast(`${L.name} relocates its capital.`);
+    return;
+  }
+  annexCountry(loserId,winnerId);
+}
+function siegeNeed(p){
+  if(!p||p.sea)return 0;
+  // Open ground still takes a day or two to actually occupy. At zero, a war became a
+  // footrace into each other's empty provinces and the two armies never met at all.
+  return 6+(p.capital?60:0)+(p.city?16:0)+p.fort*11;
+}
+/* Zone of control. An unbroken army holds the ground next to it, so you cannot stroll
+   past one into the province behind it. This is the single rule that turns a war from
+   two armies swapping homelands into a front line that has to be pushed. */
+function zocBlocked(prov,byOwner){
+  return neighbors(prov.id).some(q=>
+    armiesAt(q.id).some(x=>x.owner!==byOwner&&!x.broken&&atWar(byOwner,x.owner)));
+}
+/* A siege that nobody is pressing lifts. Stored on the province rather than derived,
+   because it is real progress the player can see, but it decays fast so an abandoned
+   assault does not leave a province half-taken for the rest of the game. */
+function siegeDecay(){
+  G.provinces.forEach(p=>{
+    if(!p.siege)return;
+    const pressed=G.armies.some(x=>x.stance==="attack"&&x.target===p.id&&!x.broken);
+    if(!pressed)p.siege=Math.max(0,p.siege-siegeNeed(p)*.12);
+  });
+}
+function collapseStep(){
+  // a country with no provinces left is finished even if its capital never fell
+  alive().forEach(c=>{
+    if(c.id===G.you)return;
+    if(provsOf(c.id).length===0){
+      c.alive=false;
+      armiesOf(c.id).slice().forEach(a=>destroyArmy(a));
+      forgetRelations(c.id);
+      logAdd(`${c.name} ceases to exist.`,"war");
+    }
+  });
+  const me=you();
+  if(me&&provsOf(G.you).length===0)G.defeat=true;
+  if(alive().length===1&&alive()[0].id===G.you)G.victory=true;
+}
+
+/* ================================================================
+   AI
+   Countries act on their own initiative on a stagger, so the world does not move
+   in lockstep. Personality tilts every roll rather than deciding it outright,
+   which is what keeps them feeling authored instead of random.
+   ================================================================ */
+/* A country that is being justified against, or that is running a justification, is in
+   a crisis and thinks every day instead of every four to nine. The twenty day timer
+   exists so the other side can react; in v1 they kept doing peacetime wandering, so the
+   telegraph was a political points tax and a wait rather than a build-up you can watch
+   walking toward your border. */
+function threatenedBy(cid){
+  const out=[];
+  for(const k in G.rel){
+    const r=G.rel[k];
+    if(!r.justify&&!r.ready)continue;
+    const j=r.justify||r.ready;
+    const [a,b]=k.split(":").map(Number);
+    if(a!==cid&&b!==cid)continue;
+    if(j.by===cid)continue;
+    out.push(j.by);
+  }
+  return out;
+}
+function inCrisis(cid){
+  if(threatenedBy(cid).length)return true;
+  for(const k in G.rel){
+    const r=G.rel[k];
+    if(r.justify&&r.justify.by===cid)return true;
+  }
+  return false;
+}
+function aiStep(){
+  alive().forEach(c=>{
+    if(c.id===G.you)return;
+    if(G.day<c.nextThink)return;
+    c.nextThink=G.day+(inCrisis(c.id)?1:ri(4,9));
+    const p=PERSONALITIES.find(x=>x.k===c.personality)||PERSONALITIES[2];
+    aiEconomy(c,p);
+    aiDiplomacy(c,p);
+    aiCrisis(c,p);
+    aiWar(c,p);
+  });
+}
+function aiEconomy(c,p){
+  if(!c.research&&rnd()<.55*p.research){
+    const opts=TECH.filter(t=>c.tech[t.k]<t.max&&!techLocked(c,t)&&techCost(c,t)<=c.treasury*.5);
+    if(opts.length){
+      const want=atWar_any(c.id)?opts.filter(t=>t.col!=="Industry"):opts;
+      startResearch(c.id,pick(want.length?want:opts).k);
+    }
+  }
+  // patch up a battered army before paying for a whole new one
+  const hurt=armiesOf(c.id).filter(x=>x.troops<x.max*.72&&PV(x.prov)&&PV(x.prov).owner===c.id);
+  if(hurt.length&&rnd()<.7){
+    const a2=hurt.sort((x,y)=>(x.troops/x.max)-(y.troops/y.max))[0];
+    const rc=reinforceCost(a2);
+    if(c.treasury>rc.money*1.8&&c.workers>rc.workers*1.4)orderReinforce(c.id,a2.id);
+  }
+  const cities=provsOf(c.id).filter(x=>x.city);
+  const cost=recruitCost(c.id);
+  const wantArmy=atWar_any(c.id)?.75:.3*p.aggro;
+  if(cities.length&&rnd()<wantArmy&&c.treasury>cost.money*2.2&&c.workers>cost.workers*1.6)
+    orderRecruit(c.id,pick(cities).id);
+  if(rnd()<.22&&c.treasury>factoryCost(c)*2.5&&c.build.length<2)orderFactory(c.id);
+  if(rnd()<.3&&c.treasury>2000){
+    const front=provsOf(c.id).filter(x=>x.nb.some(n=>{const q=PV(n);return q&&!q.sea&&q.owner!=null&&q.owner!==c.id&&atWar(c.id,q.owner);}));
+    if(front.length)orderFortify(c.id,pick(front).id);
+  }
+}
+/* Twenty days of visible preparation: dig in on the threatened border, pull the field
+   army onto it, buy a soldier, and go looking for a friend. */
+function aiCrisis(c,p){
+  const threats=threatenedBy(c.id);
+  if(!threats.length)return;
+  const hot=new Set();
+  G.provinces.forEach(q=>{
+    if(q.sea||q.owner!==c.id)return;
+    if(q.nb.some(n=>{const z=PV(n);return z&&!z.sea&&threats.includes(z.owner);}))hot.add(q.id);
+  });
+  if(!hot.size)return;
+  const front=[...hot].map(PV);
+  // fortify the threatened border specifically, not just any border
+  const weakest=front.filter(q=>q.fort<4).sort((x,y)=>x.fort-y.fort)[0];
+  if(weakest&&c.treasury>fortCost(weakest)*1.5)orderFortify(c.id,weakest.id);
+  // raise a soldier if there is a city to raise it in
+  const cities=provsOf(c.id).filter(x=>x.city);
+  const cost=recruitCost(c.id);
+  if(cities.length&&c.treasury>cost.money*1.6&&c.workers>cost.workers*1.3&&rnd()<.5)
+    orderRecruit(c.id,cities[0].id);
+  // walk the army to the border they are about to come through
+  armiesOf(c.id).forEach(a=>{
+    if(a.moving!=null||a.broken||hot.has(a.prov))return;
+    if(atWar_any(c.id))return;                       // a live war outranks a threat
+    const goal=[...hot].sort((x,y)=>
+      Math.hypot(PV(x).x-PV(a.prov).x,PV(x).y-PV(a.prov).y)-
+      Math.hypot(PV(y).x-PV(a.prov).x,PV(y).y-PV(a.prov).y))[0];
+    const step=stepToward(a.prov,goal,c.id,[]);
+    if(step!=null)orderMove(a,step);
+  });
+  // and look for anyone who might stand with them
+  if(rnd()<.5){
+    const friend=alive().map(o=>o.id).filter(t=>t!==c.id&&!threats.includes(t)&&
+      !hasPact(c.id,t)&&!atWar(c.id,t)&&allianceOdds(c.id,t)>.3);
+    if(friend.length){
+      const t=friend.sort((x,y)=>stanceOf(c.id,y)-stanceOf(c.id,x))[0];
+      if(t===G.you){
+        const r=rel(c.id,G.you);
+        if(!r.offer){r.offer={from:c.id,until:G.day+30};r.lastAsk=G.day;
+          toast(`${c.name} wants a pact. It is being threatened.`);}
+      }else proposeAlliance(c.id,t);
+    }
+  }
+}
+function atWar_any(cid){return alive().some(c=>c.id!==cid&&atWar(cid,c.id));}
+function aiDiplomacy(c,p){
+  const nbrs=bordersWith(c.id).filter(b=>CO(b)&&CO(b).alive);
+  const known=[...new Set([...nbrs,...alive().map(x=>x.id)])].filter(x=>x!==c.id);
+  // ask someone for a pact
+  if(rnd()<.45*p.ally){
+    const cands=alliesOf(c.id).length>=MAX_PACTS?[]:
+      known.filter(t=>!hasPact(c.id,t)&&!atWar(c.id,t)&&allianceOdds(c.id,t)>.45);
+    if(cands.length){
+      const t=cands.sort((a,b)=>stanceOf(c.id,b)-stanceOf(c.id,a))[0];
+      if(t===G.you){
+        // the AI approaching the player is a decision waiting in the Diplomacy tab,
+        // not a thing that happens to them
+        const r=rel(c.id,G.you);
+        if(!r.offer&&G.day-(r.lastAsk||-999)>45){
+          r.offer={from:c.id,until:G.day+30};r.lastAsk=G.day;
+          toast(`${c.name} proposes a defence pact. Open Talks to answer.`);
+          logAdd(`${c.name} proposes a defence pact.`);
+        }
+      }else if(proposeAlliance(c.id,t)){
+        logAdd(`${c.name} and ${CO(t).name} sign a defence pact.`);
+      }
+    }
+  }
+  // distant nations have nothing to argue about, so opinion creeps back toward neutral
+  alive().forEach(o=>{
+    if(o.id===c.id||nbrs.includes(o.id)||atWar(c.id,o.id))return;
+    const st=stanceOf(c.id,o.id);
+    if(st<0)nudgeStance(c.id,o.id,.35);
+  });
+  // drift: neighbours you are not allied with slowly grate on each other
+  nbrs.forEach(b=>{
+    if(hasPact(c.id,b)){if(stanceOf(c.id,b)<PACT_DRIFT_CAP)nudgeStance(c.id,b,.25);}
+    else if(!atWar(c.id,b))nudgeStance(c.id,b,rnd()<.5?-.4:.4);
+  });
+  // end wars: demand a province when clearly winning, take white peace when not
+  alive().forEach(o=>{
+    if(o.id===c.id||!atWar(c.id,o.id))return;
+    const r=rel(c.id,o.id);
+    const len=G.day-(r.warStart||G.day);
+    const score=warScore(c.id,o.id);
+    if(len>70&&score>4&&rnd()<.3){
+      const want=demandableFrom(c.id,o.id)
+        .sort((x,y)=>(y.city?1:0)-(x.city?1:0)||y.pop-x.pop)[0];
+      if(want){
+        if(o.id===G.you){
+          // a demand aimed at the player is a decision that waits on Diplomacy
+          if(!r.demand){r.demand={from:c.id,prov:want.id,until:G.day+40};
+            toast(`${c.name} demands ${want.name} for peace.`,"war");
+            logAdd(`${c.name} demands ${want.name} in exchange for peace.`,"war");}
+        }else{
+          termsOffer(c.id,o.id,"demand",want.id);
+        }
+        return;
+      }
+    }
+    if(len<150)return;
+    const weary=clamp((len-150)/900,0,.6);
+    if(rnd()<.05+weary)makePeace(c.id,o.id);
+  });
+}
+function aiWar(c,p){
+  const r=rel;
+  // cash in a ripe justification, or think better of it
+  for(const k in G.rel){
+    const rr=G.rel[k];
+    if(!rr.ready||rr.ready.by!==c.id)continue;
+    const [x,y]=k.split(":").map(Number);
+    const target=x===c.id?y:x;
+    const T=CO(target);
+    if(!T||!T.alive){rr.ready=null;continue;}
+    const mine=armiesOf(c.id).reduce((s,a)=>s+a.troops,0);
+    const theirs=armiesOf(target).reduce((s,a)=>s+a.troops,0);
+    // they armed up during the twenty days, or someone got in the way
+    if(hasPact(c.id,target)||theirs>mine*1.15||alliesOf(target).some(al=>hasPact(c.id,al))){
+      rr.ready=null;rr.stance=clamp(rr.stance+10,-100,100);
+      logAdd(`${c.name} thinks better of its war on ${T.name}.`);
+      continue;
+    }
+    rr.ready=null;
+    declareWar(c.id,target);
+  }
+  const nbrs=bordersWith(c.id).filter(b=>CO(b)&&CO(b).alive);
+  // start a justification against a weak, disliked neighbour
+  // Nobody starts a war in the first year. Two of ten test worlds killed a player who
+  // had done nothing wrong inside nine months, which is a bad way to learn a game.
+  if(G.day>=OPENING_PEACE&&!atWar_any(c.id)&&rnd()<.085*p.aggro){
+    const targets=nbrs.filter(b=>{
+      const rr=r(c.id,b);
+      return !rr.war&&!rr.justify&&!rr.pact&&rr.truce<G.day&&
+        provsOf(b).length<provsOf(c.id).length*1.1&&rr.stance<5&&
+        armiesOf(b).reduce((s,x)=>s+x.troops,0)<armiesOf(c.id).reduce((s,x)=>s+x.troops,0)*1.05;
+    });
+    if(targets.length){
+      const t=targets.sort((a,b)=>(provsOf(a).length-stanceOf(c.id,a)/8)-(provsOf(b).length-stanceOf(c.id,b)/8))[0];
+      startJustify(c.id,t);
+    }
+  }
+  // a justification the AI paid for fires the moment it ripens (justifyStep handles it)
+  // move and fight
+  const enemies=alive().filter(o=>o.id!==c.id&&atWar(c.id,o.id)).map(o=>o.id);
+  armiesOf(c.id).forEach(a=>{
+    if(a.moving!=null)return;
+    if(a.broken){
+      // fall back toward home
+      const safe=landNeighbors(a.prov).filter(q=>q.owner===c.id&&!armiesAt(q.id).some(x=>x.owner!==c.id));
+      if(safe.length)orderMove(a,pick(safe).id);
+      return;
+    }
+    if(!enemies.length){
+      // peacetime: drift toward the border with whoever is least liked
+      const front=provsOf(c.id).filter(q=>q.nb.some(n=>{const z=PV(n);return z&&!z.sea&&z.owner!=null&&z.owner!==c.id;}));
+      if(front.length&&rnd()<.25){
+        const step=landNeighbors(a.prov).filter(q=>q.owner===c.id);
+        if(step.length)orderMove(a,pick(step).id);
+      }
+      a.stance="defend";a.target=null;
+      return;
+    }
+    // if this army is sitting on a completed but blocked siege, go kill the blocker
+    if(a.target!=null){
+      const tp=PV(a.target);
+      if(tp&&tp.siege>=siegeNeed(tp)&&zocBlocked(tp,c.id)){
+        const blocker=landNeighbors(a.prov).find(q=>
+          armiesAt(q.id).some(x=>x.owner!==c.id&&!x.broken&&enemies.includes(x.owner)));
+        if(blocker){orderAttack(a,blocker.id);return;}
+      }
+    }
+    const hostileAdj=landNeighbors(a.prov).filter(q=>q.owner!=null&&enemies.includes(q.owner));
+    if(hostileAdj.length){
+      // attack the softest adjacent target, unless badly outnumbered there
+      const best=hostileAdj.map(q=>{
+        const def=armiesAt(q.id).filter(d=>d.owner!==c.id&&!d.broken)
+          .reduce((s,d)=>s+defencePower(d,q),0);
+        return {q,def};
+      }).sort((x,y)=>x.def-y.def)[0];
+      if(best.def<attackPower(a)*(1.15*p.aggro))orderAttack(a,best.q.id);
+      else {a.stance="defend";a.target=null;}
+      return;
+    }
+    // no contact: step toward the nearest enemy province
+    const goal=nearestEnemyProv(a.prov,enemies);
+    if(goal!=null){
+      const step=stepToward(a.prov,goal,c.id,enemies);
+      if(step!=null)orderMove(a,step);
+    }
+  });
+}
+/* Breadth-first over the province graph. The map is 99 hexes, so a full search per
+   army is cheap. If the map ever grows past a few hundred, cache this per country
+   per tick instead of per army. */
+function nearestEnemyProv(from,enemies){
+  const seen=new Set([from]);let q=[from];
+  for(let depth=0;depth<14&&q.length;depth++){
+    const next=[];
+    for(const pid of q){
+      for(const nid of PV(pid).nb){
+        if(seen.has(nid))continue;seen.add(nid);
+        const n=PV(nid);if(!n||n.sea)continue;
+        if(n.owner!=null&&enemies.includes(n.owner))return nid;
+        next.push(nid);
+      }
+    }
+    q=next;
+  }
+  return null;
+}
+function stepToward(from,goal,cid,enemies){
+  const prev=new Map([[from,null]]);let q=[from];
+  for(let depth=0;depth<16&&q.length;depth++){
+    const next=[];
+    for(const pid of q){
+      for(const nid of PV(pid).nb){
+        if(prev.has(nid))continue;
+        const n=PV(nid);if(!n||n.sea)continue;
+        if(n.owner!=null&&n.owner!==cid&&!enemies.includes(n.owner))continue;  // no trespassing
+        prev.set(nid,pid);
+        if(nid===goal){
+          let cur=nid;while(prev.get(cur)!==from&&prev.get(cur)!=null)cur=prev.get(cur);
+          return cur;
+        }
+        next.push(nid);
+      }
+    }
+    q=next;
+  }
+  return null;
+}
+
+/* ================================================================
+   INTEGRITY
+   Throws in a harness, repairs quietly in play. Same stack as the football game:
+   assert what must be true, fix what can be fixed, never take the game down.
+   ================================================================ */
+function assertWorldIntegrity(where){
+  const errs=[];
+  const seenA=new Set();
+  G.armies.forEach(a=>{
+    if(seenA.has(a.id))errs.push(`duplicate army id ${a.id}`);
+    seenA.add(a.id);
+    const p=PV(a.prov);
+    if(!p)errs.push(`army ${a.id} on missing province ${a.prov}`);
+    else if(p.sea)errs.push(`army ${a.id} at sea`);
+    const c=CO(a.owner);
+    if(!c)errs.push(`army ${a.id} owned by missing country ${a.owner}`);
+    else if(!c.alive)errs.push(`army ${a.id} owned by dead country ${c.name}`);
+    if(a.troops<0)errs.push(`army ${a.id} negative troops`);
+    if(a.target!=null&&!PV(a.target))errs.push(`army ${a.id} targeting missing province`);
+    if(a.moving!=null&&!PV(a.moving))errs.push(`army ${a.id} moving to missing province`);
+    if(!G.generals.some(g=>g.id===a.gen))errs.push(`army ${a.id} has no general`);
+  });
+  G.provinces.forEach(p=>{
+    if(p.sea)return;
+    if(p.owner==null)return;
+    const c=CO(p.owner);
+    if(!c)errs.push(`province ${p.id} owned by missing country`);
+    else if(!c.alive)errs.push(`province ${p.id} owned by dead country ${c.name}`);
+  });
+  // EXACTLY one, not at least one, and the country's own pointer has to agree with it.
+  // The old assert only checked "at least one, and not for the player", which is why a
+  // leaked capital star was invisible to a 63,000 day soak.
+  alive().forEach(c=>{
+    const stars=G.provinces.filter(p=>!p.sea&&p.capital&&p.owner===c.id);
+    if(!provsOf(c.id).length)return;
+    if(stars.length!==1)errs.push(`${c.name} has ${stars.length} capitals`);
+    else if(c.capital!==stars[0].id)errs.push(`${c.name} points at the wrong capital`);
+  });
+  const orphanStars=G.provinces.filter(p=>!p.sea&&p.capital&&(!CO(p.owner)||!CO(p.owner).alive));
+  if(orphanStars.length)errs.push(`${orphanStars.length} capital stars on nobody's land`);
+  for(const k in G.rel){
+    const [a,b]=k.split(":").map(Number);
+    if(!CO(a)||!CO(b))errs.push(`relation ${k} references a missing country`);
+    else if(!CO(a).alive||!CO(b).alive)errs.push(`relation ${k} references a dead country`);
+    const r=G.rel[k];
+    if(r.war&&r.pact)errs.push(`relation ${k} is at war and allied at once`);
+  }
+  if(errs.length)throw new Error(`[${where}] ${errs.length} faults: ${errs.slice(0,4).join(" | ")}`);
+  return true;
+}
+function repairWorld(){
+  let fixed=0;
+  G.armies.slice().forEach(a=>{
+    const c=CO(a.owner);
+    if(!c||!c.alive||!PV(a.prov)||PV(a.prov).sea){destroyArmy(a);fixed++;return;}
+    if(a.target!=null&&!PV(a.target)){a.target=null;a.stance="defend";fixed++;}
+    if(a.moving!=null&&!PV(a.moving)){a.moving=null;a.eta=0;fixed++;}
+    if(!G.generals.some(g=>g.id===a.gen)){const g=newGeneral();a.gen=g.id;fixed++;}
+    if(a.troops<0){a.troops=0;fixed++;}
+  });
+  G.provinces.forEach(p=>{
+    if(p.sea){p.owner=null;p.city=false;p.capital=false;return;}
+    const c=CO(p.owner);
+    if(!c||!c.alive){
+      const nb=landNeighbors(p.id).map(n=>CO(n.owner)).filter(c2=>c2&&c2.alive);
+      p.owner=nb.length?nb[0].id:(alive()[0]||{id:null}).id;
+      p.capital=false;fixed++;
+    }
+  });
+  for(const k in G.rel){
+    const [a,b]=k.split(":").map(Number);
+    const A=CO(a),B=CO(b);
+    if(!A||!B||!A.alive||!B.alive){delete G.rel[k];fixed++;continue;}
+    if(G.rel[k].war&&G.rel[k].pact){G.rel[k].pact=null;fixed++;}
+  }
+  G.provinces.forEach(p=>{
+    if(p.capital&&(p.sea||!CO(p.owner)||!CO(p.owner).alive)){p.capital=false;fixed++;}
+  });
+  alive().forEach(c=>{
+    const mine=provsOf(c.id);
+    if(!mine.length)return;
+    const stars=mine.filter(p=>p.capital);
+    if(stars.length===1&&c.capital===stars[0].id)return;
+    const seat=stars.find(p=>p.id===c.capital)||stars[0]||mine.find(p=>p.city)||mine[0];
+    setCapital(c.id,seat.id);fixed++;
+  });
+  return fixed;
+}
+function integrityGuard(where){
+  try{assertWorldIntegrity(where);}
+  catch(e){const n=repairWorld();if(n)logAdd(`World repaired (${n} faults).`);}
+}
+
+/* ================================================================
+   SAVE
+   ================================================================ */
+function scrub(o,d){
+  d=d||0;if(d>10||o==null)return o;
+  if(typeof o==="string")return o.replace(/[<>"'&]/g,"").slice(0,80);
+  if(Array.isArray(o)){for(let i=0;i<o.length;i++)o[i]=scrub(o[i],d+1);return o;}
+  if(typeof o==="object"){for(const k in o)o[k]=scrub(o[k],d+1);return o;}
+  return o;
+}
+function serializeSave(){
+  // provinces carry static geometry that never changes, so it is dropped and
+  // recomputed on load. That is most of the file.
+  const g={
+    ver:SAVE_VER,day:G.day,you:G.you,speed:G.speed,
+    nextArmy:G.nextArmy,nextGen:G.nextGen,stats:G.stats,
+    defeat:!!G.defeat,victory:!!G.victory,
+    p:G.provinces.map(p=>[p.id,p.sea?1:0,p.owner==null?-1:p.owner,p.name,p.terrain,
+      (p.city?1:0)+(p.capital?2:0),p.fort,p.pop,Math.round(p.siege||0)]),
+    c:G.countries.map(c=>[c.id,c.name,c.color,c.alive?1:0,c.capital,
+      Math.round(c.treasury),Math.round(c.workers),c.factories,Math.round(c.pp),
+      TECH.map(t=>c.tech[t.k]).join(","),c.personality,
+      c.research?[c.research.k,c.research.left,c.research.total]:0,
+      c.build.map(b=>[b.kind==="army"?1:0,b.prov==null?-1:b.prov,Math.round(b.left),b.size||0]),
+      c.nextThink,c.homeProvs||0,c.nat==null?-1:c.nat]),
+    a:G.armies.map(a=>[a.id,a.owner,a.prov,a.troops,a.max,a.gen,
+      a.stance==="attack"?1:0,a.broken?1:0,a.moving==null?-1:a.moving,a.eta,
+      a.target==null?-1:a.target,+(a.pool||0).toFixed(2)]),
+    g:G.generals.map(x=>[x.id,x.name,x.skill]),
+    r:Object.entries(G.rel).map(([k,v])=>[k,Math.round(v.stance),
+      v.pact?v.pact.type:"",v.pact?v.pact.since:0,v.war?1:0,
+      v.justify?[v.justify.by,v.justify.until]:0,v.lastAsk,v.truce,v.warStart||0,
+      v.offer?[v.offer.from,v.offer.until]:0,v.ready?[v.ready.by,v.ready.until]:0]),
+    l:G.log.slice(0,80).map(x=>[x.d,x.t,x.k])
+  };
+  return JSON.stringify(g);
+}
+function expandSave(s){
+  const g={ver:s.ver,day:s.day,you:s.you,speed:s.speed||2,
+    nextArmy:s.nextArmy,nextGen:s.nextGen,stats:s.stats||{battles:0,taken:0},
+    defeat:!!s.defeat,victory:!!s.victory,rel:{},log:[]};
+  g.provinces=s.p.map(a=>{
+    const id=a[0],col=id%COLS,row=Math.floor(id/COLS),xy=hexXY(col,row);
+    return {id,col,row,x:+xy.x.toFixed(1),y:+xy.y.toFixed(1),sea:!!a[1],
+      owner:a[2]<0?null:a[2],name:a[3],terrain:a[4],
+      city:!!(a[5]&1),capital:!!(a[5]&2),fort:a[6],pop:a[7],siege:a[8]||0,nb:neighborCells(col,row)};
+  });
+  g.countries=s.c.map(a=>{
+    // comma separated, because join("") silently corrupted any level above nine
+    const parts=String(a[9]).indexOf(",")>=0?String(a[9]).split(","):String(a[9]).split("");
+    const tech={};TECH.forEach((t,i)=>tech[t.k]=+(parts[i]||0));
+    return {id:a[0],name:a[1],color:a[2],alive:!!a[3],capital:a[4],ai:a[0]!==s.you,
+      treasury:a[5],workers:a[6],factories:a[7],pp:a[8],tech,personality:a[10],
+      research:a[11]?{k:a[11][0],left:a[11][1],total:a[11][2]}:null,homeProvs:a[14]||0,
+      nat:(a[15]==null||a[15]<0)?null:a[15],
+      blurb:(NATIONS[a[15]]||{}).blurb||"",bonus:(NATIONS[a[15]]||{}).bonus||{},
+      build:(a[12]||[]).map(b=>({kind:b[0]?"army":"factory",prov:b[1]<0?null:b[1],left:b[2],size:b[3]})),
+      nextThink:a[13]||0};
+  });
+  g.armies=s.a.map(a=>({id:a[0],owner:a[1],prov:a[2],troops:a[3],max:a[4],gen:a[5],
+    stance:a[6]?"attack":"defend",broken:!!a[7],moving:a[8]<0?null:a[8],eta:a[9],
+    target:a[10]<0?null:a[10],pool:a[11]||0}));
+  g.generals=s.g.map(a=>({id:a[0],name:a[1],skill:a[2]}));
+  (s.r||[]).forEach(a=>{
+    g.rel[a[0]]={stance:a[1],pact:a[2]?{type:a[2],since:a[3]}:null,war:!!a[4],
+      justify:a[5]?{by:a[5][0],until:a[5][1]}:null,lastAsk:a[6],truce:a[7],warStart:a[8],
+      offer:a[9]?{from:a[9][0],until:a[9][1]}:null,
+      ready:a[10]?{by:a[10][0],until:a[10][1]}:null};
+  });
+  g.log=(s.l||[]).map(a=>({d:a[0],t:a[1],k:a[2]}));
+  return g;
+}
+function validateSaveShape(g){
+  if(!g||typeof g!=="object")throw new Error("not an object");
+  if(g.ver!==SAVE_VER)throw new Error("version");
+  if(!Array.isArray(g.p)||g.p.length!==COLS*ROWS)throw new Error("province count");
+  if(!Array.isArray(g.c)||!g.c.length)throw new Error("countries");
+  if(!Array.isArray(g.a)||!Array.isArray(g.g))throw new Error("armies");
+  if(typeof g.you!=="number"||!g.c.some(c=>c[0]===g.you))throw new Error("no player country");
+  if(typeof g.day!=="number"||g.day<0)throw new Error("day");
+  return true;
+}
+function saveGame(quiet){
+  try{
+    localStorage.setItem(SAVE_KEY,serializeSave());
+    G.saveError=false;return true;
+  }catch(e){
+    G.saveError=true;
+    if(!quiet)toast("Could not save. Storage is full or blocked.","war");
+    return false;
+  }
+}
+function loadGame(){
+  const backup=G;
+  try{
+    const raw=localStorage.getItem(SAVE_KEY);
+    if(!raw)return false;
+    const s=scrub(JSON.parse(raw));
+    validateSaveShape(s);
+    G=expandSave(s);
+    rebuildIndex();
+    repairWorld();
+    if(!you())throw new Error("player country missing");
+    return true;
+  }catch(e){
+    G=backup;if(G)rebuildIndex();
+    return false;
+  }
+}
+function wipeSave(){try{localStorage.removeItem(SAVE_KEY);}catch(e){}}
+
+/* ================================================================
+   UI STATE
+   All of it in one object, so resetting after a new game or a load clears
+   everything instead of most things.
+   ================================================================ */
+const UI={tab:"nation",sel:null,army:null,sheet:null,lastTab:null,pending:""};
+function resetUI(){UI.tab="nation";UI.sel=null;UI.army=null;UI.sheet=null;UI.lastTab=null;UI.pending="";}
+const app=document.getElementById("app");
+let TOASTS=null;
+function toast(msg,kind){
+  if(!TOASTS){TOASTS=$(`<div class="toasts"></div>`);document.body.appendChild(TOASTS);}
+  const t=$(`<div class="toast ${kind==="war"?"war":kind==="good"?"good":""}">${esc(msg)}</div>`);
+  TOASTS.appendChild(t);
+  setTimeout(()=>{t.remove();},3400);
+  while(TOASTS.children.length>4)TOASTS.firstChild.remove();
+}
+
+/* ================================================================
+   THE MAP
+   Redrawn every tick, so it stays cheap: one path per hex, one counter per army,
+   one line per live battle. Everything else on screen is left alone.
+   ================================================================ */
+function shade(hex,amt){
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+  r=clamp(Math.round(r*(1+amt)),0,255);g=clamp(Math.round(g*(1+amt)),0,255);b=clamp(Math.round(b*(1+amt)),0,255);
+  return "#"+((r<<16)|(g<<8)|b).toString(16).padStart(6,"0");
+}
+function mapSVG(){
+  let hexes="",marks="",counters="",arrows="";
+  for(const p of G.provinces){
+    const path=hexPath(p.x,p.y);
+    if(p.sea){hexes+=`<path class="hex sea" d="${path}"/>`;continue;}
+    const c=CO(p.owner);
+    const base=c?c.color:"#2a3640";
+    const fill=shade(base,TERRAIN_TINT[p.terrain]||0);
+    const sel=UI.sel===p.id?" sel":"";
+    hexes+=`<path class="hex${sel}" d="${path}" fill="${fill}" data-p="${p.id}"/>`;
+    if(p.capital)
+      marks+=`<path class="cap" d="M${p.x} ${p.y-9} l2.6 5.4 5.9.8 -4.3 4.2 1 5.9 -5.2-2.8 -5.2 2.8 1-5.9 -4.3-4.2 5.9-.8Z"/>`;
+    else if(p.city)
+      marks+=`<rect class="city" x="${p.x-3.5}" y="${p.y-3.5}" width="7" height="7" rx="1"/>`;
+    if(p.fort>0)
+      marks+=`<text class="hexlbl" x="${p.x}" y="${p.y+HEX-9}">${"|".repeat(p.fort)}</text>`;
+    if(p.siege>0){
+      const need=siegeNeed(p),frac=clamp(p.siege/Math.max(1,need),0,1);
+      marks+=`<path d="${hexPath(p.x,p.y)}" fill="none" stroke="#e05252" stroke-width="2.4"
+        stroke-dasharray="${(frac*HEX*6).toFixed(1)} 999" opacity=".95" pointer-events="none"/>`;
+    }
+  }
+  // army counters: stacked slightly when more than one sits on a hex
+  const byProv={};
+  G.armies.forEach(a=>{(byProv[a.prov]=byProv[a.prov]||[]).push(a);});
+  for(const pid in byProv){
+    const p=PV(+pid);if(!p)continue;
+    const stack=byProv[pid];
+    stack.slice(0,3).forEach((a,i)=>{
+      const c=CO(a.owner);
+      const ox=p.x-13+i*3, oy=p.y+4+i*3;
+      const w=Math.max(20,a.troops>=100?28:24);
+      const hp=clamp(a.troops/Math.max(1,a.max),0,1);
+      counters+=`<g class="cnt"><rect x="${ox}" y="${oy}" width="${w}" height="13" rx="2"
+        fill="${c?c.color:"#666"}" opacity="${a.broken?.55:1}"/>
+        <rect x="${ox}" y="${oy+11}" width="${(w*hp).toFixed(1)}" height="2" fill="${hp>.5?"#6cc27a":hp>.25?"#e0a33e":"#e05252"}"/>
+        <text x="${ox+w/2}" y="${oy+6}">${a.broken?"\u2620":a.troops}</text></g>`;
+      if(a.owner===G.you)
+        counters+=`<rect x="${ox-1.5}" y="${oy-1.5}" width="${w+3}" height="16" rx="3" fill="none" stroke="#f0b429" stroke-width="1.3" pointer-events="none"/>`;
+    });
+  }
+  // battle arrows: green when the attacker is winning the exchange, red when losing
+  engagements().forEach(({att,def})=>{
+    const a=PV(att.prov),b=PV(def.prov);
+    if(!a||!b)return;
+    const winning=att._win;
+    const col=winning?"#6cc27a":"#e05252";
+    const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1;
+    // pushed off the centre line so it does not sit under the two unit counters
+    const nx=-dy/len, ny=dx/len;
+    const off=11;
+    const x1=a.x+dx/len*11+nx*off, y1=a.y+dy/len*11+ny*off;
+    const x2=b.x-dx/len*21+nx*off, y2=b.y-dy/len*21+ny*off;
+    const ax=x2-dx/len*9, ay=y2-dy/len*9, px=nx*6, py=ny*6;
+    arrows+=`<line class="arrow" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#080d11" stroke-width="6"/>
+      <line class="arrow" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}"/>
+      <path class="arrow" d="M${x2.toFixed(1)} ${y2.toFixed(1)}L${(ax+px).toFixed(1)} ${(ay+py).toFixed(1)}L${(ax-px).toFixed(1)} ${(ay-py).toFixed(1)}Z" fill="${col}" stroke="#080d11" stroke-width="1.4"/>`;
+  });
+  return `<svg class="map" viewBox="0 0 ${MAPW} ${MAPH}" role="img" aria-label="Situation map">
+    ${hexes}${marks}${counters}${arrows}</svg>`;
+}
+function paintMap(){
+  const host=document.getElementById("mapwrap");
+  if(!host)return;
+  const old=host.querySelector("svg");
+  const next=$(mapSVG());
+  if(old)host.replaceChild(next,old);else host.insertBefore(next,host.firstChild);
+  next.querySelectorAll("[data-p]").forEach(el=>{
+    el.onclick=()=>{const id=+el.dataset.p;UI.sel=id;openProvince(id);};
+  });
+}
+function paintBar(){
+  const host=document.getElementById("bar");
+  if(!host)return;
+  host.innerHTML=barHTML();
+  host.querySelectorAll("[data-speed]").forEach(b=>b.onclick=()=>{
+    G.speed=+b.dataset.speed;restartClock();paintBar();
+  });
+}
+function barHTML(){
+  const c=you();if(!c)return "";
+  const net=netOf(c.id), cost=recruitCost(c.id);
+  // Everything is shown per DAY. The clock ticks in days and nobody converts weeks in
+  // their head while a war is on.
+  const cells=[
+    ["Treasury",money(c.treasury),(net>=0?"+":"")+num(net/7)+"/day",net>=0?"up":"down"],
+    ["Workers",num(c.workers),"+"+(workerGain(c.id)/7).toFixed(1)+"/day","up"],
+    ["Factories",String(c.factories),buildRate(c.id).toFixed(1)+"/day",""],
+    ["Politics",Math.floor(c.pp)+"","+"+(ppGain(c.id)/7).toFixed(2)+"/day","up"],
+    ["Land",provsOf(c.id).length+"","of "+G.provinces.filter(p=>!p.sea).length,""]];
+  return `<div class="who">
+      <span class="flag" style="background:${esc(c.color)}"></span>
+      <h1>${esc(c.name)}</h1>
+      <span class="clock">${dateStr(G.day)}</span>
+      ${speedsHTML()}
+    </div>
+    <div class="res">${cells.map(([k,v,d,cl])=>
+      `<div><div class="k">${k}</div><div class="v">${v}</div><div class="d ${cl}">${d}</div></div>`).join("")}</div>`;
+}
+function speedsHTML(){
+  const labels={0:"II",1:"\u25B6",2:"\u25B6\u25B6",3:"\u25B6\u25B6\u25B6"};
+  return `<div class="speeds">${[0,1,2,3].map(s=>
+    `<button data-speed="${s}" class="${G.speed===s?"on":""}" aria-label="Speed ${s}">${labels[s]}</button>`).join("")}</div>`;
+}
+
+/* ================================================================
+   THE CLOCK
+   The world runs whether or not the player is looking at it. This is the
+   structural difference from a turn-based game: render can no longer be the
+   only thing that redraws, because state changes without a tap.
+   ================================================================ */
+let CLOCK=null;
+function restartClock(){
+  if(CLOCK){clearInterval(CLOCK);CLOCK=null;}
+  const ms=TICK_MS[G?G.speed:0];
+  if(!ms)return;
+  CLOCK=setInterval(()=>{
+    tick();
+    paintMap();paintBar();
+    // Army is the tap-heaviest tab and it was being rebuilt every 170ms at speed 3, so
+    // Select then Attack ate clicks. While a selection or a sheet is live, the panel
+    // holds still; the map and the readout keep moving.
+    const frozen=(UI.tab==="army"&&(UI.army!=null||UI.sheet))||UI.sheet;
+    if(!frozen&&(UI.tab==="army"||UI.tab==="nation"||UI.tab==="build"))paintPanel();
+    // A decision waiting on the player has to reach them even if they are looking at
+    // another tab. Repainting Diplomacy every tick would move buttons under a thumb
+    // mid-tap, so it only rebuilds when the set of pending decisions actually changes.
+    const sig=pendingSignature();
+    if(sig!==UI.pending){UI.pending=sig;render();}
+    if(G.defeat||G.victory){G.speed=0;restartClock();render();}
+  },ms);
+}
+
+/* ================================================================
+   PANELS
+   ================================================================ */
+function pendingSignature(){
+  let out="";
+  for(const k in G.rel){
+    const r=G.rel[k];
+    if(r.offer)out+="o"+k;
+    if(r.ready)out+="r"+k;
+    if(r.demand)out+="d"+k;
+  }
+  return out;
+}
+function render(){
+  if(!G||G.you==null){renderStart();return;}
+  UI.pending=pendingSignature();
+  const keep=UI.lastTab===UI.tab?(window.scrollY||0):0;
+  UI.lastTab=UI.tab;
+  app.innerHTML="";
+  app.appendChild($(`<div class="bar" id="bar">${barHTML()}</div>`));
+  app.appendChild($(`<div class="mapwrap" id="mapwrap"></div>`));
+  app.appendChild($(`<div class="wrap" id="panel"></div>`));
+  app.appendChild(nav());
+  paintMap();
+  paintPanel();
+  window.scrollTo(0,keep);
+}
+function nav(){
+  const items=[["nation","\u25C8","Nation"],["army","\u2694","Army"],["build","\u2699","Build"],
+    ["research","\u2691","Tech"],["diplo","\u25CE","Talks"],["world","\u25D4","World"],
+    ["log","\u2261","Log"]];
+  const n=$(`<nav></nav>`);
+  const offers=Object.values(G.rel).filter(r=>r.offer||r.ready||r.demand).length;
+  items.forEach(([k,ic,lab])=>{
+    const alert=(k==="diplo"&&offers>0);
+    const b=$(`<button class="${UI.tab===k?"on":""}${alert?" alert":""}" ${UI.tab===k?'aria-current="page"':""}>
+      <span class="ic">${ic}</span>${lab}</button>`);
+    b.onclick=()=>{UI.tab=k;render();};
+    n.appendChild(b);
+  });
+  return n;
+}
+function paintPanel(){
+  const w=document.getElementById("panel");
+  if(!w)return;
+  const y=window.scrollY;
+  w.innerHTML="";
+  if(G.defeat){w.appendChild($(`<div class="card"><div class="eyebrow">Game over</div>
+    <h3>Your nation is gone.</h3><div class="small muted">Survived to ${esc(dateStr(G.day))}.</div></div>`));}
+  if(G.victory){w.appendChild($(`<div class="card"><div class="eyebrow">Victory</div>
+    <h3>The map is yours.</h3><div class="small muted">Completed ${esc(dateStr(G.day))}.</div></div>`));}
+  ({nation:panelNation,army:panelArmy,build:panelBuild,research:panelResearch,
+    diplo:panelDiplo,world:panelWorld,log:panelLog}[UI.tab]||panelNation)(w);
+  if(Math.abs(window.scrollY-y)>2)window.scrollTo(0,y);
+}
+
+/* ---- Nation ---- */
+function panelNation(w){
+  const c=you();
+  const wars=alive().filter(o=>o.id!==c.id&&atWar(c.id,o.id));
+  const pacts=alliesOf(c.id).map(CO).filter(Boolean);
+  const threats=[];
+  for(const k in G.rel){
+    const r=G.rel[k];
+    if(!r.justify)continue;
+    const [a,b]=k.split(":").map(Number);
+    if((a===c.id||b===c.id)&&r.justify.by!==c.id)threats.push({who:CO(r.justify.by),until:r.justify.until});
+  }
+  // The game used to tell you how you were doing only once, at the end. A live rank
+  // turns the clock into a scoreboard instead of a screensaver.
+  const byLand=alive().slice().sort((x,y)=>provsOf(y.id).length-provsOf(x.id).length);
+  const byArmy=alive().slice().sort((x,y)=>
+    armiesOf(y.id).reduce((s,a)=>s+a.troops,0)-armiesOf(x.id).reduce((s,a)=>s+a.troops,0));
+  const rankLand=byLand.findIndex(x=>x.id===c.id)+1;
+  const rankArmy=byArmy.findIndex(x=>x.id===c.id)+1;
+
+  if(G.day<OPENING_PEACE){
+    const b=$(`<div class="card" style="border-color:var(--pact)"></div>`);
+    b.appendChild($(`<div class="eyebrow" style="color:var(--pact)">Peacetime</div>`));
+    b.appendChild($(`<div class="small">Nobody can start a war until <b>${esc(dateStr(OPENING_PEACE))}</b>.
+      Build armies, factories and forts now. ${OPENING_PEACE-G.day} days left.</div>`));
+    w.appendChild(b);
+  }
+
+  const card=$(`<div class="card"></div>`);
+  card.appendChild($(`<div class="eyebrow">Situation</div>`));
+  card.appendChild($(`<div class="between"><h3 style="margin:0">${esc(c.name)}</h3>
+    <span class="pill">${esc((PERSONALITIES.find(p=>p.k===c.personality)||{}).label||"")}</span></div>`));
+  if(c.blurb)card.appendChild($(`<div class="small muted">${esc(c.blurb)}</div>`));
+  card.appendChild($(`<div class="row small" style="margin-top:5px">
+    <span class="pill">Land ${rankLand} of ${alive().length}</span>
+    <span class="pill">Army ${rankArmy} of ${alive().length}</span></div>`));
+  const st=[
+    ["Provinces",provsOf(c.id).length+" of "+(c.homeProvs||provsOf(c.id).length)+" at the start"],
+    ["Cities",provsOf(c.id).filter(p=>p.city).length],
+    ["Armies",armiesOf(c.id).length+" / "+ARMY_MAX],
+    ["Troops",armiesOf(c.id).reduce((a,x)=>a+x.troops,0)],
+    ["Upkeep",money(upkeepOf(c.id)/7)+"/day"],
+    ["Provinces taken",G.stats.mine||0]];
+  card.appendChild($(`<div class="divider"></div><table>${
+    st.map(([k,v])=>`<tr><td class="l muted">${k}</td><td class="mono">${esc(String(v))}</td></tr>`).join("")}</table>`));
+  w.appendChild(card);
+
+  if(threats.length){
+    const t=$(`<div class="card" style="border-color:var(--war)"></div>`);
+    t.appendChild($(`<div class="eyebrow" style="color:var(--war)">Incoming</div>`));
+    threats.forEach(x=>t.appendChild($(`<div class="small">${esc(x.who?x.who.name:"Someone")} is justifying a war on you.
+      <span class="mono muted">${Math.max(0,x.until-G.day)} days left.</span></div>`)));
+    w.appendChild(t);
+  }
+  if(wars.length){
+    const t=$(`<div class="card"></div>`);
+    t.appendChild($(`<div class="eyebrow">At war with</div>`));
+    const l=$(`<div class="lst"></div>`);
+    wars.forEach(o=>{
+      const row=$(`<div class="between"><div class="row">
+        <span class="flag" style="background:${esc(o.color)}"></span>
+        <span>${esc(o.name)}</span><span class="pill war">war</span></div></div>`);
+      const b=$(`<button class="btn sm">Demand terms</button>`);
+      b.onclick=()=>openTerms(o.id);
+      row.appendChild(b);l.appendChild(row);
+    });
+    t.appendChild(l);w.appendChild(t);
+  }
+  if(pacts.length){
+    const t=$(`<div class="card"></div>`);
+    t.appendChild($(`<div class="eyebrow">Defence pacts</div>`));
+    pacts.forEach(o=>t.appendChild($(`<div class="row small" style="padding:3px 0">
+      <span class="flag" style="background:${esc(o.color)}"></span>${esc(o.name)}
+      <span class="pill pact">defence</span></div>`)));
+    w.appendChild(t);
+  }
+  // The headline rule he asked for, stated on the screen instead of hidden in a toast.
+  {
+    const aim=$(`<div class="card"></div>`);
+    aim.appendChild($(`<div class="eyebrow">How a country ends</div>`));
+    aim.appendChild($(`<div class="small muted">Taking a capital only ends a country that has
+      already lost more than half its land. Above that, its government flees to another
+      city and the war goes on. Take the land first, then the capital.</div>`));
+    const list=alive().filter(o=>o.id!==c.id&&atWar(c.id,o.id));
+    list.forEach(o=>{
+      const left=provsOf(o.id).length, home=o.homeProvs||left;
+      const need=Math.ceil(home*CAPITULATE_AT);
+      const done=clamp(1-(left-need)/Math.max(1,home-need),0,1);
+      aim.appendChild($(`<div style="margin-top:7px">
+        <div class="between small"><span>${esc(o.name)}</span>
+        <span class="mono muted">${left} of ${home} left \u00B7 needs ${Math.max(0,left-need+1)} more</span></div>
+        <div class="bar2" style="margin-top:3px"><i style="width:${(done*100).toFixed(0)}%;background:var(--war)"></i></div></div>`));
+    });
+    if(list.length)w.appendChild(aim);
+  }
+
+  const sv=$(`<div class="card"></div>`);
+  sv.appendChild($(`<div class="eyebrow">Save</div>`));
+  const row=$(`<div class="row"></div>`);
+  const b1=$(`<button class="btn sm">Save now</button>`);
+  b1.onclick=()=>{if(saveGame())toast("Saved.","good");};
+  const b2=$(`<button class="btn sm d">New game</button>`);
+  b2.onclick=()=>confirmSheet("Start a new game?","This wipes the current campaign.",()=>{
+    wipeSave();G=null;resetUI();if(CLOCK)clearInterval(CLOCK);CLOCK=null;renderStart();
+  });
+  row.appendChild(b1);row.appendChild(b2);sv.appendChild(row);
+  if(G.saveError)sv.appendChild($(`<div class="small" style="color:var(--war);margin-top:6px">Saving is failing. Storage may be full.</div>`));
+  w.appendChild(sv);
+}
+
+/* ---- Army ---- */
+function panelArmy(w){
+  const c=you();
+  const arms=armiesOf(c.id);
+  const head=$(`<div class="card"></div>`);
+  head.appendChild($(`<div class="eyebrow">Order of battle</div>`));
+  head.appendChild($(`<div class="small muted">Tap an army, then tap a province on the map to move or attack.
+    Armies next to an enemy you are at war with fight on their own. Attack presses the
+    assault, Hold digs in.</div>`));
+  w.appendChild(head);
+  if(!arms.length){
+    w.appendChild($(`<div class="card small muted">No armies in the field. Raise one from the Build tab.</div>`));
+    return;
+  }
+  const list=$(`<div class="card lst"></div>`);
+  arms.sort((a,b)=>b.troops-a.troops).forEach(a=>{
+    const g=generalOf(a),p=PV(a.prov);
+    const hp=clamp(a.troops/Math.max(1,a.max),0,1);
+    const state=a.broken?`<span class="pill war">broken</span>`
+      :a.moving!=null?`<span class="pill">moving \u00B7 ${a.eta}d</span>`
+      :a.stance==="attack"?`<span class="pill war">attacking</span>`
+      :`<span class="pill">holding</span>`;
+    const fight=a._fighting?`<span class="pill ${a._win?"pact":"war"}">${a._win?"winning":"losing"}</span>`:"";
+    const where=a.moving!=null?`${esc(p?p.name:"?")} \u2192 ${esc(PV(a.moving)?PV(a.moving).name:"?")}`
+      :a.target!=null?`${esc(p?p.name:"?")} vs ${esc(PV(a.target)?PV(a.target).name:"?")}`
+      :esc(p?p.name:"?");
+    const row=$(`<div>
+      <div class="between"><div style="min-width:0">
+        <div style="font-weight:600">${esc(g.name)} ${state} ${fight}</div>
+        <div class="small muted">${where} \u00B7 skill ${g.skill}</div>
+      </div><div class="mono" style="text-align:right">
+        <div style="font-weight:700">${a.troops}</div><div class="small muted">/${a.max}</div></div></div>
+      <div class="bar2" style="margin-top:4px"><i style="width:${(hp*100).toFixed(0)}%;background:${hp>.5?"var(--ok)":hp>.25?"var(--you)":"var(--war)"}"></i></div>
+    </div>`);
+    const acts=$(`<div class="row" style="margin-top:6px;flex-wrap:wrap"></div>`);
+    const sel=$(`<button class="btn sm ${UI.army===a.id?"p":""}">${UI.army===a.id?"Selected":"Select"}</button>`);
+    sel.onclick=()=>{UI.army=UI.army===a.id?null:a.id;paintPanel();paintMap();};
+    acts.appendChild(sel);
+    // He said troops every time, not armies. This is how you feed a unit already at the
+    // front instead of waiting a fortnight for a whole new stack.
+    if(PV(a.prov)&&PV(a.prov).owner===c.id&&a.troops<a.max+REINFORCE_OVER){
+      const rc=reinforceCost(a);
+      const rb=$(`<button class="btn sm">Reinforce \u00B7 ${money(rc.money)}</button>`);
+      rb.disabled=c.treasury<rc.money||c.workers<rc.workers;
+      rb.onclick=()=>{const res=orderReinforce(c.id,a.id);
+        toast(res.ok?`+${res.gain} troops.`:res.msg,res.ok?"good":"war");paintPanel();paintBar();paintMap();};
+      acts.appendChild(rb);
+    }
+    const gb=$(`<button class="btn sm">New general \u00B7 ${GENERAL_PP}pp</button>`);
+    gb.disabled=c.pp<GENERAL_PP;
+    gb.onclick=()=>{const res=replaceGeneral(c.id,a.id);
+      toast(res.ok?`${res.name} takes command. Skill ${res.skill}.`:res.msg||"Cannot.",res.ok?"good":"war");
+      paintPanel();paintBar();};
+    acts.appendChild(gb);
+    if(a.stance==="attack"||a.moving!=null){
+      const h=$(`<button class="btn sm">Hold</button>`);
+      h.onclick=()=>{orderHold(a);paintPanel();paintMap();};
+      acts.appendChild(h);
+    }
+    if(UI.army===a.id){
+      landNeighbors(a.prov).forEach(q=>{
+        const enemy=q.owner!=null&&q.owner!==c.id;
+        const war=enemy&&atWar(c.id,q.owner);
+        if(enemy&&!war)return;
+        const held=war&&zocBlocked(q,c.id);
+        const b=$(`<button class="btn sm ${war?"d":""}">${war?"Attack ":"Move "}${esc(q.name)}</button>`);
+        b.disabled=a.broken&&war;
+        b.onclick=()=>{
+          if(war)orderAttack(a,q.id);else orderMove(a,q.id);
+          UI.army=null;paintPanel();paintMap();
+        };
+        acts.appendChild(b);
+        if(held)acts.appendChild($(`<span class="small muted" style="width:100%">
+          An enemy army beside ${esc(q.name)} is holding that ground. Beat it first.</span>`));
+      });
+      seaReach(a.prov,c.id).forEach(pid=>{
+        const q=PV(pid);
+        if(!q||(q.owner!=null&&q.owner!==c.id&&!atWar(c.id,q.owner)))return;
+        const b=$(`<button class="btn sm">\u2248 Sail to ${esc(q.name)} \u00B7 ${crossingDays(c.id)}d</button>`);
+        b.onclick=()=>{if(orderMove(a,pid))toast(`Crossing to ${q.name}.`);
+          UI.army=null;paintPanel();paintMap();};
+        acts.appendChild(b);
+      });
+    }
+    row.appendChild(acts);
+    list.appendChild(row);
+  });
+  w.appendChild(list);
+}
+
+/* ---- Build ---- */
+function panelBuild(w){
+  const c=you();
+  const cost=recruitCost(c.id);
+  const q=$(`<div class="card"></div>`);
+  q.appendChild($(`<div class="eyebrow">Production queue</div>`));
+  if(!c.build.length)q.appendChild($(`<div class="small muted">Nothing in production.</div>`));
+  else{
+    const l=$(`<div class="lst"></div>`);
+    c.build.forEach((b,i)=>{
+      const total=b.kind==="army"?RECRUIT_DAYS*8:RECRUIT_DAYS*10;
+      const pct=clamp(1-b.left/total,0,1);
+      const days=Math.ceil(b.left/Math.max(.1,buildRate(c.id)));
+      l.appendChild($(`<div>
+        <div class="between"><span>${b.kind==="army"?"Army at "+esc(PV(b.prov)?PV(b.prov).name:"?"):"Factory"}</span>
+        <span class="mono small muted">${i===0?days+"d":"queued"}</span></div>
+        <div class="bar2" style="margin-top:4px"><i style="width:${(pct*100).toFixed(0)}%;background:var(--you)"></i></div></div>`));
+    });
+    q.appendChild(l);
+  }
+  w.appendChild(q);
+
+  const r=$(`<div class="card"></div>`);
+  r.appendChild($(`<div class="eyebrow">Raise an army</div>`));
+  r.appendChild($(`<div class="small muted">${money(cost.money)} and ${cost.workers} workers. Costs more with every army you already field.</div>`));
+  const cities=provsOf(c.id).filter(p=>p.city);
+  const grid=$(`<div class="row" style="flex-wrap:wrap;margin-top:7px"></div>`);
+  if(!cities.length)grid.appendChild($(`<div class="small muted">No cities held.</div>`));
+  cities.forEach(p=>{
+    const b=$(`<button class="btn sm">${esc(p.name)}</button>`);
+    b.disabled=c.treasury<cost.money||c.workers<cost.workers;
+    b.onclick=()=>{const res=orderRecruit(c.id,p.id);if(!res.ok)toast(res.msg,"war");else toast("Recruitment ordered.");paintPanel();paintBar();};
+    grid.appendChild(b);
+  });
+  r.appendChild(grid);
+  w.appendChild(r);
+
+  const f=$(`<div class="card"></div>`);
+  f.appendChild($(`<div class="eyebrow">Factories</div>`));
+  f.appendChild($(`<div class="between"><div class="small muted" style="flex:1">
+    National industry: ${c.factories} factories, finishing ${buildRate(c.id).toFixed(1)} points of work a day.
+    They are not on the map, so capturing a city does not capture its factories.</div></div>`));
+  const fb=$(`<button class="btn sm" style="margin-top:7px">Build factory \u00B7 ${money(factoryCost(c))}</button>`);
+  fb.disabled=c.treasury<factoryCost(c);
+  fb.onclick=()=>{const res=orderFactory(c.id);if(!res.ok)toast(res.msg||"Cannot build.","war");else toast("Factory ordered.");paintPanel();paintBar();};
+  f.appendChild(fb);
+  w.appendChild(f);
+
+  const fo=$(`<div class="card"></div>`);
+  fo.appendChild($(`<div class="eyebrow">Fortify</div>`));
+  fo.appendChild($(`<div class="small muted">Forts make a province harder to take. Front line provinces first.</div>`));
+  const front=provsOf(c.id).filter(p=>p.nb.some(n=>{const z=PV(n);return z&&!z.sea&&z.owner!=null&&z.owner!==c.id;}));
+  const fg=$(`<div class="row" style="flex-wrap:wrap;margin-top:7px"></div>`);
+  (front.length?front:provsOf(c.id)).slice(0,14).forEach(p=>{
+    const b=$(`<button class="btn sm">${esc(p.name)} ${"|".repeat(p.fort)||"\u00B7"} ${money(fortCost(p))}</button>`);
+    b.disabled=c.treasury<fortCost(p)||p.fort>=4;
+    b.onclick=()=>{const res=orderFortify(c.id,p.id);if(!res.ok)toast(res.msg,"war");else toast(`${p.name} fortified.`,"good");paintPanel();paintBar();paintMap();};
+    fg.appendChild(b);
+  });
+  fo.appendChild(fg);
+  w.appendChild(fo);
+}
+
+/* ---- Research ---- */
+function panelResearch(w){
+  const c=you();
+  if(c.research){
+    const t=TECH_BY[c.research.k];
+    const pct=clamp(1-c.research.left/c.research.total,0,1);
+    const card=$(`<div class="card"></div>`);
+    card.appendChild($(`<div class="eyebrow">In progress</div>`));
+    card.appendChild($(`<div class="between"><b>${esc(t.label)} \u00B7 level ${c.tech[t.k]+1}</b>
+      <span class="mono small muted">${c.research.left}d</span></div>
+      <div class="bar2" style="margin-top:5px"><i style="width:${(pct*100).toFixed(0)}%;background:var(--you)"></i></div>`));
+    w.appendChild(card);
+  }
+  ["Land","Defence","Industry"].forEach(col=>{
+    const card=$(`<div class="card"></div>`);
+    card.appendChild($(`<div class="eyebrow">${col}</div>`));
+    const l=$(`<div class="lst"></div>`);
+    TECH.filter(t=>t.col===col).forEach(t=>{
+      const lvl=c.tech[t.k],maxed=lvl>=t.max,cost=techCost(c,t);
+      const lock=techLocked(c,t);
+      const row=$(`<div class="between">
+        <div style="min-width:0">
+          <div><b>${esc(t.label)}</b> <span class="mono small muted">${lvl}/${t.max}</span></div>
+          <div class="small muted">${esc(t.desc)}</div>
+          ${lock?`<div class="small" style="color:var(--you)">Locked. Needs ${esc(lock)}.</div>`:""}
+        </div></div>`);
+      const b=$(`<button class="btn sm">${maxed?"Complete":lock?"Locked":money(cost)}</button>`);
+      b.disabled=maxed||!!lock||!!c.research||c.treasury<cost;
+      b.onclick=()=>{const res=startResearch(c.id,t.k);if(!res.ok)toast(res.msg||"Cannot start.","war");else toast(`${t.label} research begun.`);paintPanel();paintBar();};
+      row.appendChild(b);l.appendChild(row);
+    });
+    card.appendChild(l);
+    w.appendChild(card);
+  });
+}
+
+/* ---- Diplomacy ---- */
+function panelDiplo(w){
+  const c=you();
+  // pending offers first: these are decisions waiting on the player
+  const pending=[];
+  for(const k in G.rel){
+    const r=G.rel[k];
+    if(r.offer&&CO(r.offer.from)&&CO(r.offer.from).alive)pending.push({r,from:r.offer.from});
+    if(r.demand&&CO(r.demand.from)&&CO(r.demand.from).alive)pending.push({r,demand:r.demand});
+    if(r.ready&&r.ready.by===c.id){
+      const [a,b]=k.split(":").map(Number);
+      pending.push({r,ready:(a===c.id?b:a)});
+    }
+  }
+  if(pending.length){
+    const card=$(`<div class="card" style="border-color:var(--you)"></div>`);
+    card.appendChild($(`<div class="eyebrow" style="color:var(--you)">Waiting on you</div>`));
+    const l=$(`<div class="lst"></div>`);
+    pending.forEach(x=>{
+      if(x.demand){
+        const o=CO(x.demand.from),pr=PV(x.demand.prov);
+        if(!o||!pr){x.r.demand=null;return;}
+        const row=$(`<div><div class="row" style="margin-bottom:5px">
+          <span class="flag" style="background:${esc(o.color)}"></span>
+          <span style="flex:1">${esc(o.name)} will end the war if you hand over
+          <b>${esc(pr.name)}</b>. <span class="mono muted">${Math.max(0,x.demand.until-G.day)}d</span></span></div></div>`);
+        const acts=$(`<div class="row"></div>`);
+        const y=$(`<button class="btn sm d">Give ${esc(pr.name)}</button>`);
+        y.onclick=()=>{
+          setProvinceOwner(pr.id,o.id);
+          makePeace(G.you,o.id);
+          x.r.demand=null;
+          logAdd(`You cede ${pr.name} to ${o.name} for peace.`);
+          toast("The war is over.","good");render();
+        };
+        const n=$(`<button class="btn sm">Fight on</button>`);
+        n.onclick=()=>{x.r.demand=null;nudgeStance(G.you,o.id,-6);toast("You refuse.","war");render();};
+        acts.appendChild(y);acts.appendChild(n);row.appendChild(acts);l.appendChild(row);
+        return;
+      }
+      if(x.from!=null){
+        const o=CO(x.from);
+        const row=$(`<div><div class="row" style="margin-bottom:5px">
+          <span class="flag" style="background:${esc(o.color)}"></span>
+          <span style="flex:1">${esc(o.name)} proposes a defence pact.
+          <span class="mono muted">${Math.max(0,x.r.offer.until-G.day)}d</span></span></div></div>`);
+        const acts=$(`<div class="row"></div>`);
+        const y=$(`<button class="btn sm p">Accept</button>`);
+        y.onclick=()=>{formPact(c.id,o.id,"defense");x.r.offer=null;
+          logAdd(`You sign a defence pact with ${o.name}.`);toast("Pact signed.","good");paintPanel();render();};
+        const n=$(`<button class="btn sm">Decline</button>`);
+        n.onclick=()=>{x.r.offer=null;nudgeStance(c.id,o.id,-8);toast("Declined.");paintPanel();render();};
+        acts.appendChild(y);acts.appendChild(n);row.appendChild(acts);l.appendChild(row);
+      }else{
+        const o=CO(x.ready);
+        if(!o||!o.alive){x.r.ready=null;return;}
+        const row=$(`<div><div class="row" style="margin-bottom:5px">
+          <span class="flag" style="background:${esc(o.color)}"></span>
+          <span style="flex:1">War on ${esc(o.name)} is justified.
+          <span class="mono small muted">${Math.max(0,x.r.ready.until-G.day)}d</span></span></div></div>`);
+        const b=$(`<button class="btn sm d">Declare war</button>`);
+        b.onclick=()=>confirmSheet(`Declare war on ${o.name}?`,
+          "Their allies will be pulled in with them.",()=>{
+            x.r.ready=null;declareWar(c.id,o.id);render();});
+        row.appendChild(b);l.appendChild(row);
+      }
+    });
+    card.appendChild(l);w.appendChild(card);
+  }
+
+  const others=alive().filter(o=>o.id!==c.id)
+    .sort((a,b)=>stanceOf(c.id,b.id)-stanceOf(c.id,a.id));
+  const borders=bordersWith(c.id);
+  const card=$(`<div class="card"></div>`);
+  card.appendChild($(`<div class="eyebrow">Nations</div>`));
+  card.appendChild($(`<div class="small muted">Opinion runs from -100 to 100. It decides whether a pact is accepted and whether you are a target.</div>`));
+  const l=$(`<div class="lst"></div>`);
+  others.forEach(o=>{
+    const r=rel(c.id,o.id);
+    const s=r.stance;
+    const tags=[];
+    if(r.war)tags.push(`<span class="pill war">war</span>`);
+    if(r.pact)tags.push(`<span class="pill pact">defence pact</span>`);
+    if(r.justify)tags.push(`<span class="pill just">${r.justify.by===c.id?"justifying":"justified against you"}</span>`);
+    if(r.truce>G.day)tags.push(`<span class="pill">truce</span>`);
+    if(borders.includes(o.id))tags.push(`<span class="pill">border</span>`);
+    const w2=clamp((s+100)/2,0,100);
+    const row=$(`<div>
+      <div class="between"><div class="row" style="min-width:0">
+        <span class="flag" style="background:${esc(o.color)}"></span>
+        <span style="font-weight:600">${esc(o.name)}</span></div>
+        <span class="mono small ${s>=0?"up":"down"}">${s>0?"+":""}${Math.round(s)}</span></div>
+      <div class="small muted">${provsOf(o.id).length} provinces \u00B7 ${armiesOf(o.id).reduce((a,x)=>a+x.troops,0)} troops
+        \u00B7 ${esc((PERSONALITIES.find(p=>p.k===o.personality)||{}).label||"")}</div>
+      <div class="bar2" style="margin-top:4px"><i style="width:${w2}%;background:${s>=0?"var(--pact)":"var(--war)"}"></i></div>
+      <div class="row" style="flex-wrap:wrap;margin-top:5px">${tags.join(" ")}</div>
+    </div>`);
+    const acts=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
+    if(!r.war&&!r.pact){
+      const b=$(`<button class="btn sm">Propose pact</button>`);
+      b.disabled=G.day-r.lastAsk<45;
+      b.onclick=()=>{
+        const ok=proposeAlliance(c.id,o.id);
+        toast(ok?`${o.name} accepts.`:`${o.name} refuses.`,ok?"good":"war");
+        logAdd(ok?`You sign a defence pact with ${o.name}.`:`${o.name} refuses a pact.`);
+        paintPanel();render();
+      };
+      acts.appendChild(b);
+    }
+    if(r.pact){
+      const b=$(`<button class="btn sm d">Break pact</button>`);
+      b.onclick=()=>confirmSheet(`Break the pact with ${o.name}?`,
+        "Every nation will think less of you.",()=>{
+          breakPact(c.id,o.id);alive().forEach(x=>{if(x.id!==c.id)nudgeStance(x.id,c.id,-8);});
+          toast("Pact broken.","war");render();});
+      acts.appendChild(b);
+    }
+    if(!r.war&&!r.justify&&!r.ready&&borders.includes(o.id)&&r.truce<G.day){
+      const cost=Math.round(JUSTIFY_PP*(1+o.tech.nuke*.7));
+      const b=$(`<button class="btn sm d">Justify war \u00B7 ${cost}pp</button>`);
+      b.disabled=c.pp<cost;
+      b.onclick=()=>{
+        const res=startJustify(c.id,o.id);
+        if(!res.ok)toast(res.msg,"war");
+        else toast(`Justification started. ${JUSTIFY_DAYS} days.`);
+        paintPanel();paintBar();render();
+      };
+      acts.appendChild(b);
+    }
+    if(r.war){
+      const b=$(`<button class="btn sm">Demand terms</button>`);
+      b.onclick=()=>openTerms(o.id);
+      acts.appendChild(b);
+    }
+    if(r.justify&&r.justify.by===c.id)
+      acts.appendChild($(`<span class="small muted mono">${Math.max(0,r.justify.until-G.day)} days to justify</span>`));
+    row.appendChild(acts);
+    l.appendChild(row);
+  });
+  card.appendChild(l);
+  w.appendChild(card);
+}
+
+/* ---- World: who is biggest, who is fighting whom. Log is a designer's tab; this is
+   the one a twelve-year-old opens, because it answers "am I winning". ---- */
+function panelWorld(w){
+  const me=you();
+  const rows=alive().slice().sort((a,b)=>provsOf(b.id).length-provsOf(a.id).length);
+  const total=G.provinces.filter(p=>!p.sea).length;
+  const card=$(`<div class="card"></div>`);
+  card.appendChild($(`<div class="eyebrow">Standings</div>`));
+  card.appendChild($(`<div class="small muted">${alive().length} nations left of ${G.countries.length}.</div>`));
+  const l=$(`<div class="lst"></div>`);
+  rows.forEach((o,i)=>{
+    const land=provsOf(o.id).length;
+    const troops=armiesOf(o.id).reduce((a,x)=>a+x.troops,0);
+    const isMe=o.id===me.id;
+    const tags=[];
+    if(!isMe&&atWar(me.id,o.id))tags.push(`<span class="pill war">at war with you</span>`);
+    if(!isMe&&hasPact(me.id,o.id))tags.push(`<span class="pill pact">pact</span>`);
+    const fighting=alive().filter(x=>x.id!==o.id&&atWar(o.id,x.id));
+    if(fighting.length&&!(!isMe&&atWar(me.id,o.id)))
+      tags.push(`<span class="pill war">fighting ${esc(fighting.map(x=>x.name).join(", "))}</span>`);
+    l.appendChild($(`<div style="${isMe?"border-left:3px solid var(--you);padding-left:7px":""}">
+      <div class="between">
+        <div class="row" style="min-width:0">
+          <span class="mono muted" style="font-size:11px;width:16px">${i+1}</span>
+          <span class="flag" style="background:${esc(o.color)}"></span>
+          <span style="font-weight:${isMe?700:600}">${esc(o.name)}${isMe?" (you)":""}</span>
+        </div>
+        <span class="mono small">${land} \u00B7 ${troops}</span>
+      </div>
+      <div class="small muted">${esc(o.blurb||"")}</div>
+      <div class="bar2" style="margin-top:4px"><i style="width:${(land/Math.max(1,total)*100*3).toFixed(0)}%;background:${esc(o.color)}"></i></div>
+      <div class="row" style="flex-wrap:wrap;margin-top:4px">${tags.join(" ")}</div>
+    </div>`));
+  });
+  card.appendChild(l);
+  card.appendChild($(`<div class="small muted" style="margin-top:6px">Columns are provinces and troops.</div>`));
+  w.appendChild(card);
+}
+
+/* ---- Log ---- */
+function panelLog(w){
+  const card=$(`<div class="card"></div>`);
+  card.appendChild($(`<div class="eyebrow">Dispatches</div>`));
+  const l=$(`<div class="lst"></div>`);
+  if(!G.log.length)l.appendChild($(`<div class="small muted">Nothing has happened yet.</div>`));
+  G.log.slice(0,90).forEach(e=>{
+    l.appendChild($(`<div class="small">
+      <span class="mono muted" style="font-size:10px">${esc(dateStr(e.d))}</span><br>
+      <span style="${e.k==="war"?"color:var(--war)":""}">${esc(e.t)}</span></div>`));
+  });
+  card.appendChild(l);
+  w.appendChild(card);
+}
+
+/* ================================================================
+   SHEETS
+   One in-game sheet for confirmations and province detail. No confirm(),
+   because a system alert on an installed phone app ignores the palette and
+   lands under the home indicator.
+   ================================================================ */
+function closeSheet(){
+  if(UI.sheet){UI.sheet.remove();UI.sheet=null;}
+  document.removeEventListener("keydown",escClose);
+}
+function escClose(e){if(e.key==="Escape")closeSheet();}
+function openSheet(build){
+  closeSheet();
+  const ov=$(`<div class="overlay"></div>`);
+  const sh=$(`<div class="sheet" role="dialog" aria-modal="true"></div>`);
+  ov.onclick=e=>{if(e.target===ov)closeSheet();};
+  build(sh);
+  const close=$(`<button class="btn" style="width:100%;margin-top:9px">Close</button>`);
+  close.onclick=closeSheet;
+  sh.appendChild(close);
+  ov.appendChild(sh);document.body.appendChild(ov);
+  UI.sheet=ov;
+  document.addEventListener("keydown",escClose);
+  const first=sh.querySelector("button");if(first)first.focus();
+}
+function confirmSheet(title,body,onYes){
+  openSheet(sh=>{
+    sh.appendChild($(`<div class="eyebrow">Confirm</div>`));
+    sh.appendChild($(`<h3>${esc(title)}</h3>`));
+    sh.appendChild($(`<div class="small muted">${esc(body)}</div>`));
+    const row=$(`<div class="row" style="margin-top:11px"></div>`);
+    const y=$(`<button class="btn d" style="flex:1">Yes</button>`);
+    y.onclick=()=>{closeSheet();onYes();};
+    const n=$(`<button class="btn" style="flex:1">Cancel</button>`);
+    n.onclick=closeSheet;
+    row.appendChild(y);row.appendChild(n);sh.appendChild(row);
+  });
+}
+/* Demand terms: the third verb. A war that can only end in annexation or a coin flip
+   has a map payoff and no diplomatic one, which is half a grand strategy game. */
+function openTerms(themId){
+  const me=G.you, them=CO(themId);
+  if(!them)return;
+  openSheet(sh=>{
+    const score=warScore(me,themId);
+    const r=rel(me,themId);
+    const len=G.day-(r.warStart||G.day);
+    const verdict=score>4?"You are clearly winning.":score>1?"You have the upper hand."
+      :score>-1?"Neither side is winning.":score>-4?"You are losing.":"You are being beaten.";
+    sh.appendChild($(`<div class="eyebrow">Terms with ${esc(them.name)}</div>`));
+    sh.appendChild($(`<h3>${esc(verdict)}</h3>`));
+    sh.appendChild($(`<div class="small muted">War score <b class="mono">${score>0?"+":""}${score.toFixed(1)}</b>
+      after ${len} days. It rises with provinces you take from them and with the size of
+      your army against theirs.</div>`));
+
+    sh.appendChild($(`<div class="divider"></div><div class="eyebrow">White peace</div>`));
+    sh.appendChild($(`<div class="small muted">Both stop. Everyone keeps what they hold today.</div>`));
+    const wp=$(`<button class="btn sm" style="margin-top:5px">Offer white peace</button>`);
+    wp.onclick=()=>{
+      const res=termsOffer(me,themId,"white");
+      toast(res.ok?res.msg:res.msg,res.ok?"good":"war");
+      if(res.ok)closeSheet();
+      render();
+    };
+    sh.appendChild(wp);
+
+    const want=demandableFrom(me,themId);
+    sh.appendChild($(`<div class="divider"></div><div class="eyebrow">Demand a province</div>`));
+    if(!want.length)
+      sh.appendChild($(`<div class="small muted">You do not border anything of theirs you could ask for.</div>`));
+    else{
+      sh.appendChild($(`<div class="small muted">They hand it over and the war ends. They only agree if
+        they are beaten badly enough, and a walled city costs more.</div>`));
+      const g=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
+      want.sort((a,b)=>(b.city?1:0)-(a.city?1:0)||b.pop-a.pop).slice(0,8).forEach(q=>{
+        const bar=(3.2+(q.city?1.6:0)+q.fort*.5).toFixed(1);
+        const b=$(`<button class="btn sm ${score>=+bar?"p":""}">${esc(q.name)}${q.city?" \u00B7 city":""}
+          <span class="mono">${bar}</span></button>`);
+        b.onclick=()=>{
+          const res=termsOffer(me,themId,"demand",q.id);
+          toast(res.msg,res.ok?"good":"war");
+          if(res.ok)closeSheet();
+          render();
+        };
+        g.appendChild(b);
+      });
+      sh.appendChild(g);
+    }
+
+    const mine=G.provinces.filter(q=>!q.sea&&q.owner===me&&!q.capital);
+    if(score<-1&&mine.length){
+      sh.appendChild($(`<div class="divider"></div><div class="eyebrow">Buy your way out</div>`));
+      sh.appendChild($(`<div class="small muted">Give them a province and the war ends today.</div>`));
+      const g=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
+      mine.sort((a,b)=>a.pop-b.pop).slice(0,6).forEach(q=>{
+        const b=$(`<button class="btn sm d">Give ${esc(q.name)}</button>`);
+        b.onclick=()=>{
+          const res=termsOffer(me,themId,"cede",q.id);
+          toast(res.msg,res.ok?"good":"war");
+          if(res.ok)closeSheet();
+          render();
+        };
+        g.appendChild(b);
+      });
+      sh.appendChild(g);
+    }
+  });
+}
+function openProvince(pid){
+  const p=PV(pid);
+  if(!p||p.sea){paintMap();return;}
+  const c=you();
+  // an army is selected and this hex is next to it: treat the tap as an order
+  if(UI.army!=null&&AR(UI.army)){
+    const a=AR(UI.army);
+    if(PV(a.prov).nb.includes(pid)){
+      if(p.owner!=null&&p.owner!==c.id&&atWar(c.id,p.owner)){
+        if(orderAttack(a,pid)){UI.army=null;toast(`Attacking ${p.name}.`,"war");paintMap();paintPanel();return;}
+      }else if(canMove(a,pid)){
+        orderMove(a,pid);UI.army=null;toast(`Marching on ${p.name}.`);paintMap();paintPanel();return;
+      }
+    }
+  }
+  openSheet(sh=>{
+    const o=CO(p.owner);
+    sh.appendChild($(`<div class="eyebrow">${esc(TERRAIN[p.terrain].label)}${p.capital?" \u00B7 capital":p.city?" \u00B7 city":""}</div>`));
+    sh.appendChild($(`<div class="between"><h3 style="margin:0">${esc(p.name)}</h3>
+      ${o?`<span class="row"><span class="flag" style="background:${esc(o.color)}"></span>
+      <span class="small">${esc(o.name)}</span></span>`:""}</div>`));
+    sh.appendChild($(`<table style="margin-top:7px">
+      <tr><td class="l muted">Population</td><td class="mono">${p.pop}</td></tr>
+      <tr><td class="l muted">Defence terrain</td><td class="mono">x${TERRAIN[p.terrain].def.toFixed(2)}</td></tr>
+      <tr><td class="l muted">Fortification</td><td class="mono">${p.fort}/4</td></tr>
+      <tr><td class="l muted">Holds against</td><td class="mono">${siegeNeed(p)?siegeNeed(p)+" siege":"nothing"}</td></tr>
+      ${p.siege>0?`<tr><td class="l muted">Under siege</td><td class="mono" style="color:var(--war)">${Math.round(p.siege)}/${siegeNeed(p)}</td></tr>`:""}
+      <tr><td class="l muted">Tax value</td><td class="mono">${money(p.pop*.5*TERRAIN[p.terrain].income*(p.city?1.5:1)/7)}/day</td></tr>
+      </table>`));
+    if(p.owner!=null&&p.owner!==c.id&&atWar(c.id,p.owner)&&zocBlocked(p,c.id)){
+      const blockers=neighbors(pid).filter(q=>
+        armiesAt(q.id).some(x=>x.owner!==c.id&&!x.broken&&atWar(c.id,x.owner)));
+      sh.appendChild($(`<div class="card" style="border-color:var(--war);margin-top:8px">
+        <div class="small">An enemy army in <b>${esc(blockers.map(q=>q.name).join(", "))}</b>
+        is holding this ground. You can wear the walls down, but you cannot walk in until
+        that army is beaten or moves.</div></div>`));
+    }
+    const here=armiesAt(pid);
+    if(here.length){
+      sh.appendChild($(`<div class="divider"></div><div class="eyebrow">Forces here</div>`));
+      here.forEach(a=>{
+        const ac=CO(a.owner),g=generalOf(a);
+        sh.appendChild($(`<div class="between small" style="padding:3px 0">
+          <span class="row"><span class="flag" style="background:${esc(ac?ac.color:"#666")}"></span>
+          ${esc(g.name)} ${a.broken?'<span class="pill war">broken</span>':""}</span>
+          <span class="mono">${a.troops}/${a.max}</span></div>`));
+      });
+    }
+    if(p.owner===c.id){
+      const acts=$(`<div class="row" style="flex-wrap:wrap;margin-top:9px"></div>`);
+      if(p.fort<4){
+        const b=$(`<button class="btn sm">Fortify \u00B7 ${money(fortCost(p))}</button>`);
+        b.disabled=c.treasury<fortCost(p);
+        b.onclick=()=>{const r2=orderFortify(c.id,pid);if(!r2.ok)toast(r2.msg,"war");else{toast("Fortified.","good");closeSheet();}paintMap();paintBar();paintPanel();};
+        acts.appendChild(b);
+      }
+      if(p.city){
+        const cost=recruitCost(c.id);
+        const b=$(`<button class="btn sm">Raise army \u00B7 ${money(cost.money)}</button>`);
+        b.disabled=c.treasury<cost.money||c.workers<cost.workers;
+        b.onclick=()=>{const r2=orderRecruit(c.id,pid);if(!r2.ok)toast(r2.msg,"war");else{toast("Recruitment ordered.");closeSheet();}paintBar();paintPanel();};
+        acts.appendChild(b);
+      }
+      sh.appendChild(acts);
+    }
+  });
+}
+
+/* ================================================================
+   START
+   ================================================================ */
+let START_NAME="";
+function renderStart(){
+  if(CLOCK){clearInterval(CLOCK);CLOCK=null;}
+  app.innerHTML="";
+  const s=$(`<div class="start"></div>`);
+  s.appendChild($(`<h1>Front Line</h1>`));
+  s.appendChild($(`<div class="small muted" style="margin-bottom:14px">A war of nations, one day at a time.</div>`));
+
+  if(localStorage.getItem(SAVE_KEY)){
+    const b=$(`<button class="btn p" style="width:100%;margin-bottom:8px">Continue campaign</button>`);
+    b.onclick=()=>{
+      if(loadGame()&&G.you!=null){resetUI();integrityGuard("load");render();restartClock();}
+      else toast("No usable save found.","war");
+    };
+    s.appendChild(b);
+    s.appendChild($(`<div class="divider"></div>`));
+  }
+  if(!G)genWorld();
+  s.appendChild($(`<div class="eyebrow" style="text-align:left">Rename your nation (optional)</div>`));
+  const inp=$(`<input type="text" maxlength="22" placeholder="Leave blank to keep the generated name"
+    style="width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);
+    border-radius:5px;color:var(--ink);font:inherit;margin-bottom:12px">`);
+  inp.value=START_NAME;
+  inp.oninput=()=>{START_NAME=inp.value;};
+  s.appendChild(inp);
+  s.appendChild($(`<div class="eyebrow" style="text-align:left">Pick a nation</div>`));
+ s.appendChild($(`<div class="small muted" style="text-align:left;margin-bottom:7px">
+   The ten largest countries in Europe by area. The map is not Europe, so each name goes
+   to whichever land on this map suits it. The blurb is true of the territory it holds.</div>`));
+
+  G.countries.forEach(c=>{
+    const land=provsOf(c.id).length;
+    const b=$(`<button class="pick">
+      <span class="flag" style="width:18px;height:18px;background:${esc(c.color)}"></span>
+      <span style="flex:1;min-width:0">
+        <b>${esc(c.name)}</b>
+        <span class="small muted" style="display:block">${esc(c.blurb||"")}</span>
+        <span class="small muted mono" style="display:block">${land} provinces \u00B7 ${c.factories} factories \u00B7
+        ${esc((PERSONALITIES.find(p=>p.k===c.personality)||{}).label)}</span></span>
+      <span class="pill">Take</span></button>`);
+    b.onclick=()=>{
+      G.you=c.id;c.ai=false;
+      const nm=START_NAME.trim().replace(/[<>&"']/g,"").slice(0,22);
+      if(nm)c.name=nm;
+      G.speed=2;
+      logAdd(`${c.name} enters the world stage.`);
+      resetUI();integrityGuard("start");saveGame(true);render();restartClock();
+    };
+    s.appendChild(b);
+  });
+  const rg=$(`<button class="btn" style="width:100%;margin-top:10px">Generate a new world</button>`);
+  rg.onclick=()=>{G=null;renderStart();};
+  s.appendChild(rg);
+  app.appendChild(s);
+}
+
+/* ================================================================
+   BOOT
+   ================================================================ */
+if(loadGame()&&G.you!=null){integrityGuard("boot");render();restartClock();}
+else{G=null;renderStart();}
+addEventListener("pagehide",()=>{if(G&&G.you!=null)saveGame(true);});
+document.addEventListener("visibilitychange",()=>{
+  // the clock is a real clock, so stop burning battery in a background tab
+  if(document.hidden){if(CLOCK){clearInterval(CLOCK);CLOCK=null;}if(G&&G.you!=null)saveGame(true);}
+  else if(G&&G.you!=null)restartClock();
+});
+</script>
+</body>
+</html>

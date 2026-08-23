@@ -57,6 +57,9 @@
   .bar h1{font-size:14px;margin:0;font-weight:700;letter-spacing:.2px;flex:1;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .clock{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.4px}
+  .speeds button{font-family:var(--mono);font-size:10px;padding:3px 5px;border-radius:4px;
+    background:var(--panel);border:1px solid var(--line);color:var(--muted);letter-spacing:.2px}
+  .speeds button.on{color:var(--ground);background:var(--you);border-color:var(--you);font-weight:700}
   .res{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px}
   .res>div{background:var(--panel);border:1px solid var(--line);border-radius:4px;
     padding:3px 2px;text-align:center;min-width:0}
@@ -69,23 +72,38 @@
 
   /* ---- the map. This is the signature: everything else is a panel. ---- */
   .mapwrap{position:relative;background:#080d11;border-bottom:1px solid var(--line)}
+  .mapkey{display:block;width:100%;padding:5px;font-size:10.5px;color:var(--dim);
+    background:#0a1015;border-top:1px solid var(--line)}
+  .alerts{background:#0f171d;border-bottom:1px solid var(--line)}
+  .alerts button{display:block;width:100%;text-align:left;padding:7px 10px;font-size:12.5px;
+    border-bottom:1px solid rgba(39,54,63,.6);line-height:1.35}
+  .alerts button:last-child{border-bottom:none}
+  .alerts .tag{font-family:var(--mono);font-size:8px;text-transform:uppercase;
+    letter-spacing:1px;display:block;margin-bottom:1px}
+  .alerts .red .tag{color:var(--war)} .alerts .amber .tag{color:var(--you)}
+  .alerts .green .tag{color:var(--pact)}
+  .hint{background:rgba(240,180,41,.1);border:1px solid rgba(240,180,41,.4);
+    border-radius:6px;padding:8px 10px;font-size:12.5px;margin-bottom:7px}
   svg.map{display:block;width:100%;height:auto;touch-action:manipulation}
   .hex{stroke:#0a1015;stroke-width:1.4;cursor:pointer}
-  .hex.sea{fill:#0d1a24;stroke:#0a1218;cursor:default}
+  .hex.sea{fill:#0a1d2c;stroke:#071722;cursor:default}
   .hex.sel{stroke:var(--you);stroke-width:2.6}
-  .hexlbl{font-family:var(--mono);font-size:8px;fill:rgba(255,255,255,.5);
-    text-anchor:middle;pointer-events:none;letter-spacing:.2px}
+  .hex.mine{stroke:rgba(255,255,255,.5);stroke-width:1.8}
+  .alarm{pointer-events:none}
+  @media (prefers-reduced-motion:no-preference){
+    .alarm{animation:pulse 1.6s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  }
+  .hexlbl{font-family:var(--mono);font-size:7px;fill:rgba(255,255,255,.6);
+    text-anchor:middle;pointer-events:none;letter-spacing:1px}
   .city{fill:rgba(255,255,255,.82);pointer-events:none}
   .cap{fill:#fff;stroke:#000;stroke-width:.5;pointer-events:none}
   .cnt{pointer-events:none}
   .cnt rect{stroke:rgba(0,0,0,.6);stroke-width:1}
-  .cnt text{font-family:var(--mono);font-size:9px;font-weight:700;text-anchor:middle;
+  .cnt text{font-family:var(--mono);font-size:10px;font-weight:700;text-anchor:middle;
     fill:#0a0f13;dominant-baseline:central}
   .arrow{pointer-events:none;stroke-width:3;stroke-linecap:round;opacity:.9}
   .speeds{display:flex;gap:2px;flex:none}
-  .speeds button{font-family:var(--mono);font-size:10px;padding:3px 7px;border-radius:4px;
-    background:rgba(10,16,20,.85);border:1px solid var(--line);color:var(--muted)}
-  .speeds button.on{color:var(--ground);background:var(--you);border-color:var(--you);font-weight:700}
 
   /* ---- panels ---- */
   .wrap{padding:8px}
@@ -121,12 +139,12 @@
 
   /* ---- nav ---- */
   nav{position:fixed;bottom:0;left:0;right:0;max-width:560px;margin:0 auto;z-index:14;
-    display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:var(--panel);
+    display:grid;grid-template-columns:repeat(5,minmax(0,1fr));background:var(--panel);
     border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
-  nav button{padding:7px 1px 8px;font-size:9.5px;color:var(--muted);min-width:0;
+  nav button{padding:7px 1px 8px;font-size:11px;color:var(--muted);min-width:0;
     display:flex;flex-direction:column;align-items:center;gap:2px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  nav button .ic{font-size:15px;line-height:1}
+  nav button .ic{font-size:17px;line-height:1}
   nav button.on{color:var(--you)}
   nav button.alert .ic{color:var(--war)}
 
@@ -159,9 +177,12 @@
    CONSTANTS
    ================================================================ */
 const SAVE_KEY="frontline_v1", SAVE_VER=1;
-const COLS=11, ROWS=9, HEX=30;          // pointy-top hexes, odd-row offset
+/* 99 hexes on a 390px phone gave 34px tiles, each carrying a unit counter, a capital
+   star, a siege ring and sometimes an arrow. Nobody can read that. 63 hexes at ~41px is
+   a board you can point at, and eight nations is a cast you can hold in your head. */
+const COLS=9, ROWS=7, HEX=30;           // pointy-top hexes, odd-row offset
 const SEA_CHANCE=.12;
-const N_COUNTRIES=10;
+const N_COUNTRIES=8;
 const START_YEAR=1936;
 const TICK_MS={0:0,1:900,2:420,3:170};  // paused, slow, normal, fast
 
@@ -178,7 +199,13 @@ const ARMY_MAX=8;                       // armies one country may field
    Without this, one lucky thrust hands an AI ten provinces and the map snowballs to a
    single winner inside two years. Measured in the harness, not guessed. */
 const CAPITULATE_AT=.5;
-const OPENING_PEACE=365;                // days before the first war may be justified
+const OPENING_PEACE=365;                // days before ANY war may be prepared
+/* Nobody comes for the player in the first two years. The AI is perfectly happy to fight
+   each other in year one, so the world still looks alive and dangerous from the outside,
+   but a beginner gets a full year of watching that happen before it is their problem.
+   Without this, a first-time player who was still working out the buttons lost a country
+   in eighteen months, which is not a difficulty curve, it is a wall. */
+const PLAYER_GRACE=730;
 const PACT_DRIFT_CAP=55;                // friendship from a pact alone stops climbing here
 const MAX_PACTS=3;                      // nobody allies with the entire world
 
@@ -546,8 +573,7 @@ function genWorld(){
   const land=provinces.filter(p=>!p.sea);
   if(land.length<N_COUNTRIES*4)return genWorld();   // freak map, roll again
 
-  const MIN_LAND=7;   // ~89 land hexes over 10 nations averages 8.9, so 7 is a floor
-                      // that can actually be met rather than an aspiration
+  const MIN_LAND=5;   // ~55 land hexes across 8 nations averages 6.9
   // seed capitals as far apart as a greedy pass manages, then flood fill outward
   const countries=[],seeds=[];
   const shuffled=shuffle(land.slice());
@@ -604,7 +630,7 @@ function genWorld(){
     });
   });
 
-  G={ver:SAVE_VER,day:0,you:null,speed:2,
+  G={ver:SAVE_VER,day:0,you:null,speed:0,
     provinces,countries,armies:[],generals:[],rel:{},log:[],
     nextArmy:1,nextGen:1,stats:{battles:0,taken:0,mine:0}};
   rebuildIndex();
@@ -1611,6 +1637,7 @@ function aiWar(c,p){
   // had done nothing wrong inside nine months, which is a bad way to learn a game.
   if(G.day>=OPENING_PEACE&&!atWar_any(c.id)&&rnd()<.085*p.aggro){
     const targets=nbrs.filter(b=>{
+      if(b===G.you&&G.day<PLAYER_GRACE)return false;
       const rr=r(c.id,b);
       return !rr.war&&!rr.justify&&!rr.pact&&rr.truce<G.day&&
         provsOf(b).length<provsOf(c.id).length*1.1&&rr.stance<5&&
@@ -1944,66 +1971,169 @@ function shade(hex,amt){
   r=clamp(Math.round(r*(1+amt)),0,255);g=clamp(Math.round(g*(1+amt)),0,255);b=clamp(Math.round(b*(1+amt)),0,255);
   return "#"+((r<<16)|(g<<8)|b).toString(16).padStart(6,"0");
 }
+/* Every enemy country is muted toward the background and only YOUR land keeps its
+   colour, with a heavy outline drawn around the whole nation. Ten equally saturated
+   blobs meant a player could not answer "where am I" in under ten seconds, which is the
+   first question, and the game never answered it. */
+function mute(hex){
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+  const gr=(r*.32+g*.52+b*.16);
+  // 28% of the original hue over a cold grey. Enough that you can still tell two
+  // neighbours apart, nowhere near enough to compete with your own colour.
+  r=Math.round(r*.28+gr*.16+22);
+  g=Math.round(g*.28+gr*.16+30);
+  b=Math.round(b*.28+gr*.16+38);
+  return "#"+((clamp(r,0,255)<<16)|(clamp(g,0,255)<<8)|clamp(b,0,255)).toString(16).padStart(6,"0");
+}
+/* The outline of your whole country, drawn as the edges of your hexes that do not touch
+   another of your hexes. One shape, one border, unmistakable. */
+function nationOutline(cid){
+  let d="";
+  const w=Math.sqrt(3)*HEX;
+  G.provinces.forEach(p=>{
+    if(p.sea||p.owner!==cid)return;
+    const list=(p.row&1)?NB_ODD:NB_EVEN;
+    // hex corners, pointy top, starting at the top vertex
+    const pt=i=>{const a=Math.PI/180*(60*i-90);
+      return [p.x+HEX*Math.cos(a),p.y+HEX*Math.sin(a)];};
+    // edge i of a pointy-top hex sits between corner i and corner i+1; map each
+    // neighbour direction onto the edge that faces it
+    const dirEdge=(dc,dr)=>{
+      if(dr===0&&dc===1)return 1;
+      if(dr===0&&dc===-1)return 4;
+      if(dr===-1)return (p.row&1)?(dc===0?5:0):(dc===-1?5:0);
+      return (p.row&1)?(dc===0?3:2):(dc===-1?3:2);
+    };
+    list.forEach(([dc,dr])=>{
+      const c2=p.col+dc,r2=p.row+dr;
+      const inside=c2>=0&&c2<COLS&&r2>=0&&r2<ROWS;
+      const q=inside?PV(r2*COLS+c2):null;
+      if(q&&!q.sea&&q.owner===cid)return;
+      const e=dirEdge(dc,dr);
+      const [x1,y1]=pt(e),[x2,y2]=pt((e+1)%6);
+      d+=`M${x1.toFixed(1)} ${y1.toFixed(1)}L${x2.toFixed(1)} ${y2.toFixed(1)}`;
+    });
+  });
+  return d;
+}
 function mapSVG(){
-  let hexes="",marks="",counters="",arrows="";
+  let hexes="",marks="",counters="",arrows="",threat="";
+  const me=G.you;
   for(const p of G.provinces){
     const path=hexPath(p.x,p.y);
-    if(p.sea){hexes+=`<path class="hex sea" d="${path}"/>`;continue;}
+    if(p.sea){
+      hexes+=`<path class="hex sea" d="${path}"/>`;
+      // a couple of wave strokes, so open water never reads as somebody's faded territory
+      marks+=`<path d="M${p.x-9} ${p.y} q4.5 -3.5 9 0 q4.5 3.5 9 0" fill="none"
+        stroke="rgba(120,180,220,.22)" stroke-width="1.4" pointer-events="none"/>`;
+      continue;
+    }
     const c=CO(p.owner);
-    const base=c?c.color:"#2a3640";
-    const fill=shade(base,TERRAIN_TINT[p.terrain]||0);
+    const mine=p.owner===me;
+    let base=c?c.color:"#2a3640";
+    let fill=shade(base,TERRAIN_TINT[p.terrain]||0);
+    if(!mine)fill=mute(fill);
     const sel=UI.sel===p.id?" sel":"";
-    hexes+=`<path class="hex${sel}" d="${path}" fill="${fill}" data-p="${p.id}"/>`;
+    hexes+=`<path class="hex${sel}${mine?" mine":""}" d="${path}" fill="${fill}" data-p="${p.id}"/>`;
     if(p.capital)
-      marks+=`<path class="cap" d="M${p.x} ${p.y-9} l2.6 5.4 5.9.8 -4.3 4.2 1 5.9 -5.2-2.8 -5.2 2.8 1-5.9 -4.3-4.2 5.9-.8Z"/>`;
+      marks+=`<path class="cap" d="M${p.x} ${p.y-10} l3 6.2 6.8.9 -4.9 4.8 1.15 6.8 -6-3.2 -6 3.2 1.15-6.8 -4.9-4.8 6.8-.9Z"
+        opacity="${mine?1:.65}"/>`;
     else if(p.city)
-      marks+=`<rect class="city" x="${p.x-3.5}" y="${p.y-3.5}" width="7" height="7" rx="1"/>`;
+      marks+=`<rect class="city" x="${p.x-4}" y="${p.y-4}" width="8" height="8" rx="1.5" opacity="${mine?.9:.5}"/>`;
     if(p.fort>0)
-      marks+=`<text class="hexlbl" x="${p.x}" y="${p.y+HEX-9}">${"|".repeat(p.fort)}</text>`;
+      marks+=`<text class="hexlbl" x="${p.x}" y="${p.y+HEX-8}" opacity="${mine?.85:.45}">${"\u25AE".repeat(p.fort)}</text>`;
+    // a province of yours with an enemy army next door gets a red ring, because being
+    // attacked and not noticing was the single worst thing about the last build
+    if(mine&&p.owner!=null&&zocBlocked(p,me))
+      threat+=`<path class="alarm" d="${path}" fill="none" stroke="#e05252" stroke-width="3"/>`;
     if(p.siege>0){
       const need=siegeNeed(p),frac=clamp(p.siege/Math.max(1,need),0,1);
-      marks+=`<path d="${hexPath(p.x,p.y)}" fill="none" stroke="#e05252" stroke-width="2.4"
+      marks+=`<path d="${path}" fill="none" stroke="${p.owner===me?"#e05252":"#f0b429"}" stroke-width="3.4"
         stroke-dasharray="${(frac*HEX*6).toFixed(1)} 999" opacity=".95" pointer-events="none"/>`;
     }
   }
-  // army counters: stacked slightly when more than one sits on a hex
+
   const byProv={};
   G.armies.forEach(a=>{(byProv[a.prov]=byProv[a.prov]||[]).push(a);});
   for(const pid in byProv){
     const p=PV(+pid);if(!p)continue;
-    const stack=byProv[pid];
-    stack.slice(0,3).forEach((a,i)=>{
+    const stack=byProv[pid].slice().sort((x,y)=>(y.owner===me?1:0)-(x.owner===me?1:0));
+    stack.slice(0,2).forEach((a,i)=>{
       const c=CO(a.owner);
-      const ox=p.x-13+i*3, oy=p.y+4+i*3;
-      const w=Math.max(20,a.troops>=100?28:24);
+      const yours=a.owner===me;
+      const w=28, h=15;
+      const ox=p.x-w/2+i*4, oy=p.y+3+i*4;
       const hp=clamp(a.troops/Math.max(1,a.max),0,1);
-      counters+=`<g class="cnt"><rect x="${ox}" y="${oy}" width="${w}" height="13" rx="2"
-        fill="${c?c.color:"#666"}" opacity="${a.broken?.55:1}"/>
-        <rect x="${ox}" y="${oy+11}" width="${(w*hp).toFixed(1)}" height="2" fill="${hp>.5?"#6cc27a":hp>.25?"#e0a33e":"#e05252"}"/>
-        <text x="${ox+w/2}" y="${oy+6}">${a.broken?"\u2620":a.troops}</text></g>`;
-      if(a.owner===G.you)
-        counters+=`<rect x="${ox-1.5}" y="${oy-1.5}" width="${w+3}" height="16" rx="3" fill="none" stroke="#f0b429" stroke-width="1.3" pointer-events="none"/>`;
+      const fill=yours?(c?c.color:"#666"):mute(c?c.color:"#666");
+      counters+=`<g class="cnt"><rect x="${ox}" y="${oy}" width="${w}" height="${h}" rx="3"
+        fill="${fill}" opacity="${a.broken?.6:1}" stroke="${yours?"#fff":"rgba(0,0,0,.55)"}"
+        stroke-width="${yours?1.8:1}"/>
+        <rect x="${ox+1}" y="${oy+h-3}" width="${((w-2)*hp).toFixed(1)}" height="2" rx="1"
+        fill="${hp>.5?"#6cc27a":hp>.25?"#e0a33e":"#e05252"}"/>
+        <text x="${ox+w/2}" y="${oy+6.5}" ${yours?'':'fill="#cfd8de"'}>${a.broken?"\u2620":a.troops}</text></g>`;
+      if(a._fighting)
+        counters+=`<circle cx="${ox+w-1}" cy="${oy}" r="3.4" fill="${a._win?"#6cc27a":"#e05252"}" stroke="#080d11" stroke-width="1"/>`;
+      if(UI.army===a.id)
+        counters+=`<rect x="${ox-3}" y="${oy-3}" width="${w+6}" height="${h+6}" rx="5" fill="none"
+          stroke="#f0b429" stroke-width="2.4" pointer-events="none"/>`;
     });
   }
-  // battle arrows: green when the attacker is winning the exchange, red when losing
   engagements().forEach(({att,def})=>{
     const a=PV(att.prov),b=PV(def.prov);
     if(!a||!b)return;
-    const winning=att._win;
-    const col=winning?"#6cc27a":"#e05252";
+    const col=att._win?"#6cc27a":"#e05252";
     const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1;
-    // pushed off the centre line so it does not sit under the two unit counters
-    const nx=-dy/len, ny=dx/len;
-    const off=11;
-    const x1=a.x+dx/len*11+nx*off, y1=a.y+dy/len*11+ny*off;
-    const x2=b.x-dx/len*21+nx*off, y2=b.y-dy/len*21+ny*off;
-    const ax=x2-dx/len*9, ay=y2-dy/len*9, px=nx*6, py=ny*6;
-    arrows+=`<line class="arrow" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#080d11" stroke-width="6"/>
+    const nx=-dy/len, ny=dx/len, off=12;
+    const x1=a.x+dx/len*13+nx*off, y1=a.y+dy/len*13+ny*off;
+    const x2=b.x-dx/len*22+nx*off, y2=b.y-dy/len*22+ny*off;
+    const ax=x2-dx/len*10, ay=y2-dy/len*10, px=nx*6.5, py=ny*6.5;
+    arrows+=`<line class="arrow" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#080d11" stroke-width="7"/>
       <line class="arrow" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}"/>
       <path class="arrow" d="M${x2.toFixed(1)} ${y2.toFixed(1)}L${(ax+px).toFixed(1)} ${(ay+py).toFixed(1)}L${(ax-px).toFixed(1)} ${(ay-py).toFixed(1)}Z" fill="${col}" stroke="#080d11" stroke-width="1.4"/>`;
   });
+  // when an army is selected, every square it can legally reach is lit up. Nobody
+  // should have to guess which hexes are a valid order.
+  let hints="";
+  if(UI.army!=null&&AR(UI.army)){
+    const a=AR(UI.army);
+    moveTargets(a).forEach(t=>{
+      hints+=`<path d="${hexPath(t.p.x,t.p.y)}" fill="none" stroke="${t.kind==="attack"?"#e05252":"#f0b429"}"
+        stroke-width="3" stroke-dasharray="7 5" opacity=".95" pointer-events="none"/>`;
+    });
+  }
+  /* Your border, drawn last so nothing sits on top of it. A dark halo, the national
+     colour, then a white line: readable against any of the eight palettes and against
+     the sea. Getting this wrong is what made a player unable to answer "which one am I". */
+  let border="";
+  if(me!=null&&CO(me)){
+    const d=nationOutline(me);
+    border=`<path d="${d}" fill="none" stroke="#05090c" stroke-width="8.5" stroke-linecap="round" pointer-events="none"/>
+      <path d="${d}" fill="none" stroke="${CO(me).color}" stroke-width="6" stroke-linecap="round" pointer-events="none"/>
+      <path d="${d}" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" pointer-events="none"/>`;
+  }
   return `<svg class="map" viewBox="0 0 ${MAPW} ${MAPH}" role="img" aria-label="Situation map">
-    ${hexes}${marks}${counters}${arrows}</svg>`;
+    ${hexes}${threat}${marks}${hints}${border}${counters}${arrows}</svg>`;
+}
+/* Every order an army can legally be given, as a list, so the map, the sheet and the
+   Army tab all agree about what is possible. */
+function moveTargets(a){
+  if(!a||a.moving!=null)return [];
+  const out=[];
+  landNeighbors(a.prov).forEach(q=>{
+    const enemy=q.owner!=null&&q.owner!==a.owner;
+    const war=enemy&&atWar(a.owner,q.owner);
+    if(enemy&&!war)return;
+    if(war){if(!a.broken)out.push({p:q,kind:"attack"});}
+    else if(canMove(a,q.id))out.push({p:q,kind:"move"});
+  });
+  seaReach(a.prov,a.owner).forEach(pid=>{
+    const q=PV(pid);
+    if(!q)return;
+    if(q.owner!=null&&q.owner!==a.owner&&!atWar(a.owner,q.owner))return;
+    if(canMove(a,pid))out.push({p:q,kind:"sail"});
+  });
+  return out;
 }
 function paintMap(){
   const host=document.getElementById("mapwrap");
@@ -2013,6 +2143,110 @@ function paintMap(){
   if(old)host.replaceChild(next,old);else host.insertBefore(next,host.firstChild);
   next.querySelectorAll("[data-p]").forEach(el=>{
     el.onclick=()=>{const id=+el.dataset.p;UI.sel=id;openProvince(id);};
+  });
+}
+/* What needs the player right now, in plain sentences, at the top of the screen.
+   The Log told you that two other countries went to war. It never told you that YOU
+   were being invaded, which is the only thing that mattered. */
+function alerts(){
+  const me=G.you, c=you();
+  if(!c)return [];
+  const out=[];
+  // 1. losing ground
+  G.provinces.forEach(p=>{
+    if(p.sea||p.owner!==me||!p.siege)return;
+    const need=siegeNeed(p),pct=Math.round(clamp(p.siege/need,0,1)*100);
+    out.push({tone:"red",tag:"Under siege",
+      text:`${p.name} is ${pct}% fallen. Send an army or lose it.`,go:()=>focusProv(p.id)});
+  });
+  G.provinces.forEach(p=>{
+    if(p.sea||p.owner!==me)return;
+    const foes=neighbors(p.id).filter(q=>armiesAt(q.id)
+      .some(x=>x.owner!==me&&!x.broken&&atWar(me,x.owner)));
+    if(!foes.length)return;
+    if(p.siege)return;
+    const who=[...new Set(foes.flatMap(q=>armiesAt(q.id).filter(x=>x.owner!==me)
+      .map(x=>CO(x.owner)&&CO(x.owner).name)))].filter(Boolean);
+    const defenders=armiesAt(p.id).filter(x=>x.owner===me).length;
+    out.push({tone:defenders?"amber":"red",tag:"Enemy at the border",
+      text:`${who.join(" and ")} ${who.length>1?"have armies":"has an army"} next to ${p.name}. `+
+        (defenders?`${defenders} of yours ${defenders>1?"are":"is"} there.`:"Nobody is defending it."),
+      key:"border",prov:p.id,go:()=>focusProv(p.id)});
+  });
+  // 2. an army that is losing, and one that is idle
+  armiesOf(me).forEach(a=>{
+    if(a.broken)out.push({tone:"red",tag:"Army broken",
+      text:`${generalOf(a).name} is beaten at ${PV(a.prov)?PV(a.prov).name:"?"}. Pull it back or it dies.`,
+      go:()=>selectArmy(a.id)});
+    else if(a._fighting&&!a._win)out.push({tone:"amber",tag:"Losing a battle",
+      text:`${generalOf(a).name} is losing at ${PV(a.prov)?PV(a.prov).name:"?"}.`,
+      go:()=>selectArmy(a.id)});
+  });
+  // 3. someone is winding up to attack you
+  threatenedBy(me).forEach(id=>{
+    const o=CO(id);if(!o)return;
+    const r=rel(me,id);
+    const j=r.justify||r.ready;
+    const days=j&&j.until?Math.max(0,j.until-G.day):0;
+    out.push({tone:"amber",tag:"War coming",
+      text:`${o.name} is preparing a war on you${r.justify?`. About ${days} days.`:". It can declare at any moment."}`,
+      go:()=>{UI.tab="world";render();}});
+  });
+  // 4. decisions sitting on Talks
+  for(const k in G.rel){
+    const r=G.rel[k];
+    if(r.offer&&CO(r.offer.from))out.push({tone:"green",tag:"Offer",
+      text:`${CO(r.offer.from).name} wants a defence pact with you.`,go:()=>{UI.tab="world";render();}});
+    if(r.demand&&CO(r.demand.from)&&PV(r.demand.prov))out.push({tone:"amber",tag:"Demand",
+      text:`${CO(r.demand.from).name} will stop the war if you hand over ${PV(r.demand.prov).name}.`,
+      go:()=>{UI.tab="world";render();}});
+    if(r.ready&&r.ready.by===me){
+      const [a,b]=k.split(":").map(Number);
+      const o=CO(a===me?b:a);
+      if(o)out.push({tone:"amber",tag:"Ready",
+        text:`You can declare war on ${o.name} now.`,go:()=>{UI.tab="world";render();}});
+    }
+  }
+  // 5. money going the wrong way
+  if(c.treasury<0)out.push({tone:"red",tag:"Broke",
+    text:"Your treasury is empty and soldiers are deserting. Disband or take peace.",
+    go:()=>{UI.tab="build";render();}});
+  else if(netOf(c.id)<0)out.push({tone:"amber",tag:"Losing money",
+    text:`You spend ${money(-netOf(c.id)/7)} a day more than you earn.`,go:()=>{UI.tab="build";render();}});
+  /* Four "enemy at the border" lines for one invasion is noise, and noise is what
+     people learn to ignore. Undefended provinces are collapsed into one line. */
+  const border=out.filter(x=>x.key==="border");
+  if(border.length>1){
+    const first=out.findIndex(x=>x.key==="border");
+    const names=border.map(x=>PV(x.prov).name);
+    const bare=border.filter(x=>x.tone==="red").length;
+    const merged={tone:bare?"red":"amber",tag:"Enemy at the border",
+      text:`Enemy armies are next to ${names.slice(0,3).join(", ")}${
+        names.length>3?` and ${names.length-3} more`:""}. `+
+        (bare?`${bare} of them ${bare>1?"have":"has"} nobody defending.`:"All of them are defended."),
+      go:()=>focusProv(border[0].prov)};
+    const rest=out.filter(x=>x.key!=="border");
+    rest.splice(Math.min(first,rest.length),0,merged);
+    return rest.slice(0,4);
+  }
+  return out.slice(0,4);
+}
+function focusProv(pid){UI.sel=pid;paintMap();openProvince(pid);}
+function selectArmy(id){
+  const a=AR(id);if(!a)return;
+  UI.army=id;UI.sel=a.prov;UI.tab="army";render();
+}
+function paintAlerts(){
+  const host=document.getElementById("alerts");
+  if(!host)return;
+  const list=alerts();
+  host.innerHTML="";
+  host.style.display=list.length?"":"none";
+  list.forEach(al=>{
+    const b=$(`<button class="${al.tone==="red"?"red":al.tone==="green"?"green":"amber"}">
+      <span class="tag">${esc(al.tag)}</span>${esc(al.text)}</button>`);
+    b.onclick=al.go;
+    host.appendChild(b);
   });
 }
 function paintBar(){
@@ -2029,24 +2263,25 @@ function barHTML(){
   // Everything is shown per DAY. The clock ticks in days and nobody converts weeks in
   // their head while a war is on.
   const cells=[
-    ["Treasury",money(c.treasury),(net>=0?"+":"")+num(net/7)+"/day",net>=0?"up":"down"],
+    ["Money",money(c.treasury),(net>=0?"+":"\u2212")+num(Math.abs(net/7))+"/day",net>=0?"up":"down"],
     ["Workers",num(c.workers),"+"+(workerGain(c.id)/7).toFixed(1)+"/day","up"],
-    ["Factories",String(c.factories),buildRate(c.id).toFixed(1)+"/day",""],
-    ["Politics",Math.floor(c.pp)+"","+"+(ppGain(c.id)/7).toFixed(2)+"/day","up"],
+    ["Factories",String(c.factories),"build speed",""],
+    ["Influence",Math.floor(c.pp)+"","for deals",""],
     ["Land",provsOf(c.id).length+"","of "+G.provinces.filter(p=>!p.sea).length,""]];
   return `<div class="who">
       <span class="flag" style="background:${esc(c.color)}"></span>
       <h1>${esc(c.name)}</h1>
-      <span class="clock">${dateStr(G.day)}</span>
+      <span class="clock">${G.speed===0?"PAUSED \u00B7 ":""}${dateStr(G.day)}</span>
       ${speedsHTML()}
     </div>
     <div class="res">${cells.map(([k,v,d,cl])=>
       `<div><div class="k">${k}</div><div class="v">${v}</div><div class="d ${cl}">${d}</div></div>`).join("")}</div>`;
 }
 function speedsHTML(){
-  const labels={0:"II",1:"\u25B6",2:"\u25B6\u25B6",3:"\u25B6\u25B6\u25B6"};
+  const names={0:"\u23F8",1:"Slow",2:"Med",3:"Fast"};
   return `<div class="speeds">${[0,1,2,3].map(s=>
-    `<button data-speed="${s}" class="${G.speed===s?"on":""}" aria-label="Speed ${s}">${labels[s]}</button>`).join("")}</div>`;
+    `<button data-speed="${s}" class="${G.speed===s?"on":""}" aria-label="${
+      s===0?"Pause":names[s]}">${names[s]}</button>`).join("")}</div>`;
 }
 
 /* ================================================================
@@ -2062,7 +2297,7 @@ function restartClock(){
   if(!ms)return;
   CLOCK=setInterval(()=>{
     tick();
-    paintMap();paintBar();
+    paintMap();paintBar();paintAlerts();
     // Army is the tap-heaviest tab and it was being rebuilt every 170ms at speed 3, so
     // Select then Attack ate clicks. While a selection or a sheet is live, the panel
     // holds still; the map and the readout keep moving.
@@ -2097,21 +2332,25 @@ function render(){
   UI.lastTab=UI.tab;
   app.innerHTML="";
   app.appendChild($(`<div class="bar" id="bar">${barHTML()}</div>`));
+  app.appendChild($(`<div class="alerts" id="alerts"></div>`));
   app.appendChild($(`<div class="mapwrap" id="mapwrap"></div>`));
+  const key=$(`<button class="mapkey">What do these symbols mean?</button>`);
+  key.onclick=openLegend;
+  document.getElementById("mapwrap").appendChild(key);
   app.appendChild($(`<div class="wrap" id="panel"></div>`));
   app.appendChild(nav());
   paintMap();
+  paintAlerts();
   paintPanel();
   window.scrollTo(0,keep);
 }
 function nav(){
-  const items=[["nation","\u25C8","Nation"],["army","\u2694","Army"],["build","\u2699","Build"],
-    ["research","\u2691","Tech"],["diplo","\u25CE","Talks"],["world","\u25D4","World"],
-    ["log","\u2261","Log"]];
+  const items=[["nation","\u2302","Home"],["army","\u2694","Armies"],["build","\u2692","Build"],
+    ["research","\u2699","Tech"],["world","\u25CE","World"]];
   const n=$(`<nav></nav>`);
   const offers=Object.values(G.rel).filter(r=>r.offer||r.ready||r.demand).length;
   items.forEach(([k,ic,lab])=>{
-    const alert=(k==="diplo"&&offers>0);
+    const alert=(k==="world"&&offers>0);
     const b=$(`<button class="${UI.tab===k?"on":""}${alert?" alert":""}" ${UI.tab===k?'aria-current="page"':""}>
       <span class="ic">${ic}</span>${lab}</button>`);
     b.onclick=()=>{UI.tab=k;render();};
@@ -2129,116 +2368,220 @@ function paintPanel(){
   if(G.victory){w.appendChild($(`<div class="card"><div class="eyebrow">Victory</div>
     <h3>The map is yours.</h3><div class="small muted">Completed ${esc(dateStr(G.day))}.</div></div>`));}
   ({nation:panelNation,army:panelArmy,build:panelBuild,research:panelResearch,
-    diplo:panelDiplo,world:panelWorld,log:panelLog}[UI.tab]||panelNation)(w);
+    world:panelWorld}[UI.tab]||panelNation)(w);
   if(Math.abs(window.scrollY-y)>2)window.scrollTo(0,y);
 }
 
 /* ---- Nation ---- */
+/* A coach, not a dashboard. The single most useful thing the game can do for someone
+   who has never played one of these is tell them what to do next, in one sentence,
+   that changes as the situation changes. Everything else on Home is reference. */
+function nextStep(){
+  const c=you();
+  const wars=alive().filter(o=>o.id!==c.id&&atWar(c.id,o.id));
+  const threats=threatenedBy(c.id);
+  const pending=pendingDecisions();
+  const armies=armiesOf(c.id);
+  const broke=c.treasury<0;
+  const cities=provsOf(c.id).filter(p=>p.city);
+  const rc=recruitCost(c.id);
+
+  if(G.speed===0&&G.day===0)
+    return {t:"Press play when you are ready",
+      b:"The buttons next to the date at the top control time. Start on Slow.",go:null};
+  if(broke)
+    return {t:"You are out of money",
+      b:"Your soldiers are deserting. End a war, or you will lose armies for nothing.",
+      go:wars.length?()=>openTerms(wars[0].id):()=>{UI.tab="build";render();}};
+  const sieged=G.provinces.find(p=>!p.sea&&p.owner===c.id&&p.siege>0);
+  if(sieged)
+    return {t:`Save ${sieged.name}`,
+      b:"An enemy is battering it down. Send an army there, or it changes hands.",
+      go:()=>focusProv(sieged.id)};
+  const brokenArmy=armies.find(a=>a.broken);
+  if(brokenArmy)
+    return {t:`Pull ${generalOf(brokenArmy).name} back`,
+      b:"That army is beaten. If it stays next to an enemy it will be wiped out. March it home and it will slowly recover.",
+      go:()=>openArmySheet(brokenArmy.id)};
+  const undefended=G.provinces.find(p=>!p.sea&&p.owner===c.id&&zocBlocked(p,c.id)&&
+    !armiesAt(p.id).some(x=>x.owner===c.id&&!x.broken));
+  if(undefended)
+    return {t:`Defend ${undefended.name}`,
+      b:"There is an enemy army next door and nobody of yours in it. Move an army in before they walk in.",
+      go:()=>focusProv(undefended.id)};
+  if(pending.length)
+    return {t:"Someone is waiting on your answer",
+      b:"There is a decision sitting in the World tab.",go:()=>{UI.tab="world";render();}};
+  if(threats.length)
+    return {t:`${CO(threats[0]).name} is preparing to attack you`,
+      b:"You have a few weeks. Build walls on that border, raise an army, and look for an ally.",
+      go:()=>{UI.tab="build";render();}};
+  if(wars.length){
+    const w0=wars[0];
+    const score=warScore(c.id,w0.id);
+    if(score>3.2)return {t:`Make ${w0.name} pay`,
+      b:"You are winning. Demand one of their provinces and end it while you are ahead.",
+      go:()=>openTerms(w0.id)};
+    if(score<-2)return {t:`Get out of the war with ${w0.name}`,
+      b:"You are losing. Offer peace before it costs you more.",go:()=>openTerms(w0.id)};
+    return {t:`Push the front with ${w0.name}`,
+      b:"Tap one of your armies on the map and send it at a province of theirs. Armies next to each other fight on their own.",
+      go:()=>{UI.tab="army";render();}};
+  }
+  if(armies.length<3&&cities.length&&c.treasury>rc.money*1.5)
+    return {t:"Raise another army",
+      b:`Two armies cannot hold a border and attack at the same time. A new one costs ${money(rc.money)} and takes about two weeks.`,
+      go:()=>{UI.tab="build";render();}};
+  if(!c.research)
+    return {t:"Start researching something",
+      b:"Research is slow, so start early. Fortification makes your land hard to take. Infantry makes every soldier hit harder.",
+      go:()=>{UI.tab="research";render();}};
+  const soft=provsOf(c.id).filter(p=>p.fort<2&&
+    p.nb.some(n=>PV(n)&&!PV(n).sea&&PV(n).owner!==c.id));
+  if(soft.length&&c.treasury>fortCost(soft[0])*2)
+    return {t:`Build walls at ${soft[0].name}`,
+      b:"It is on your border with nothing defending it. Walls slow an invasion down even when no army is there.",
+      go:()=>focusProv(soft[0].id)};
+  if(c.treasury>factoryCost(c)*2.5)
+    return {t:"Build a factory",
+      b:"Factories make everything else you build finish faster. They are the boring pick and usually the right one.",
+      go:()=>{UI.tab="build";render();}};
+  return {t:"You are in good shape",
+    b:"Let the clock run. Watch the World tab for who is getting big, and the alerts at the top for trouble.",go:null};
+}
 function panelNation(w){
   const c=you();
   const wars=alive().filter(o=>o.id!==c.id&&atWar(c.id,o.id));
   const pacts=alliesOf(c.id).map(CO).filter(Boolean);
-  const threats=[];
-  for(const k in G.rel){
-    const r=G.rel[k];
-    if(!r.justify)continue;
-    const [a,b]=k.split(":").map(Number);
-    if((a===c.id||b===c.id)&&r.justify.by!==c.id)threats.push({who:CO(r.justify.by),until:r.justify.until});
-  }
-  // The game used to tell you how you were doing only once, at the end. A live rank
-  // turns the clock into a scoreboard instead of a screensaver.
   const byLand=alive().slice().sort((x,y)=>provsOf(y.id).length-provsOf(x.id).length);
-  const byArmy=alive().slice().sort((x,y)=>
-    armiesOf(y.id).reduce((s,a)=>s+a.troops,0)-armiesOf(x.id).reduce((s,a)=>s+a.troops,0));
   const rankLand=byLand.findIndex(x=>x.id===c.id)+1;
-  const rankArmy=byArmy.findIndex(x=>x.id===c.id)+1;
 
-  if(G.day<OPENING_PEACE){
-    const b=$(`<div class="card" style="border-color:var(--pact)"></div>`);
-    b.appendChild($(`<div class="eyebrow" style="color:var(--pact)">Peacetime</div>`));
-    b.appendChild($(`<div class="small">Nobody can start a war until <b>${esc(dateStr(OPENING_PEACE))}</b>.
-      Build armies, factories and forts now. ${OPENING_PEACE-G.day} days left.</div>`));
-    w.appendChild(b);
+  // 1. WHAT DO I DO NOW
+  {
+    const st=nextStep();
+    const card=$(`<div class="card" style="border-color:var(--you)"></div>`);
+    card.appendChild($(`<div class="eyebrow" style="color:var(--you)">What to do next</div>`));
+    card.appendChild($(`<h3 style="margin-bottom:3px">${esc(st.t)}</h3>`));
+    card.appendChild($(`<div class="small">${esc(st.b)}</div>`));
+    if(st.go){
+      const b=$(`<button class="btn p sm" style="margin-top:9px">Take me there</button>`);
+      b.onclick=st.go;
+      card.appendChild(b);
+    }
+    w.appendChild(card);
   }
 
-  const card=$(`<div class="card"></div>`);
-  card.appendChild($(`<div class="eyebrow">Situation</div>`));
-  card.appendChild($(`<div class="between"><h3 style="margin:0">${esc(c.name)}</h3>
-    <span class="pill">${esc((PERSONALITIES.find(p=>p.k===c.personality)||{}).label||"")}</span></div>`));
-  if(c.blurb)card.appendChild($(`<div class="small muted">${esc(c.blurb)}</div>`));
-  card.appendChild($(`<div class="row small" style="margin-top:5px">
-    <span class="pill">Land ${rankLand} of ${alive().length}</span>
-    <span class="pill">Army ${rankArmy} of ${alive().length}</span></div>`));
-  const st=[
-    ["Provinces",provsOf(c.id).length+" of "+(c.homeProvs||provsOf(c.id).length)+" at the start"],
-    ["Cities",provsOf(c.id).filter(p=>p.city).length],
-    ["Armies",armiesOf(c.id).length+" / "+ARMY_MAX],
-    ["Troops",armiesOf(c.id).reduce((a,x)=>a+x.troops,0)],
-    ["Upkeep",money(upkeepOf(c.id)/7)+"/day"],
-    ["Provinces taken",G.stats.mine||0]];
-  card.appendChild($(`<div class="divider"></div><table>${
-    st.map(([k,v])=>`<tr><td class="l muted">${k}</td><td class="mono">${esc(String(v))}</td></tr>`).join("")}</table>`));
-  w.appendChild(card);
-
-  if(threats.length){
-    const t=$(`<div class="card" style="border-color:var(--war)"></div>`);
-    t.appendChild($(`<div class="eyebrow" style="color:var(--war)">Incoming</div>`));
-    threats.forEach(x=>t.appendChild($(`<div class="small">${esc(x.who?x.who.name:"Someone")} is justifying a war on you.
-      <span class="mono muted">${Math.max(0,x.until-G.day)} days left.</span></div>`)));
-    w.appendChild(t);
+  // 2. WHAT AM I TRYING TO DO
+  {
+    const card=$(`<div class="card"></div>`);
+    card.appendChild($(`<div class="eyebrow">The goal</div>`));
+    card.appendChild($(`<div class="small">Be the last nation standing. You are <b>${rankLand}${
+      rankLand===1?"st":rankLand===2?"nd":rankLand===3?"rd":"th"}</b> of ${alive().length} by land.</div>`));
+    const total=G.provinces.filter(p=>!p.sea).length;
+    card.appendChild($(`<div class="bar2" style="margin-top:6px"><i style="width:${
+      (provsOf(c.id).length/total*100).toFixed(0)}%;background:${esc(c.color)}"></i></div>`));
+    card.appendChild($(`<div class="small muted" style="margin-top:4px">You hold ${provsOf(c.id).length}
+      of the map\u2019s ${total} provinces. You lose if an enemy takes more than half your land and then
+      your capital.</div>`));
+    w.appendChild(card);
   }
+
+  if(G.day<PLAYER_GRACE&&!wars.length){
+    const bn=$(`<div class="card" style="border-color:var(--pact)"></div>`);
+    bn.appendChild($(`<div class="eyebrow" style="color:var(--pact)">Peacetime</div>`));
+    bn.appendChild($(`<div class="small">No war can start anywhere until
+      <b>${esc(dateStr(OPENING_PEACE))}</b>. Nobody will come for <b>you</b> until
+      <b>${esc(dateStr(PLAYER_GRACE))}</b>. Spend it building armies, factories and walls.</div>`));
+    w.appendChild(bn);
+  }
+
+  // 3. WHO AM I
+  {
+    const card=$(`<div class="card"></div>`);
+    card.appendChild($(`<div class="eyebrow">Your nation</div>`));
+    card.appendChild($(`<div class="between"><h3 style="margin:0">${esc(c.name)}</h3>
+      <span class="flag" style="width:16px;height:16px;background:${esc(c.color)}"></span></div>`));
+    if(c.blurb)card.appendChild($(`<div class="small muted">${esc(c.blurb)}</div>`));
+    const st=[
+      ["Provinces",provsOf(c.id).length+" of "+(c.homeProvs||provsOf(c.id).length)+" you started with"],
+      ["Cities",provsOf(c.id).filter(p=>p.city).length],
+      ["Armies",armiesOf(c.id).length+" of "+ARMY_MAX+" allowed"],
+      ["Soldiers",armiesOf(c.id).reduce((a,x)=>a+x.troops,0)],
+      ["Costing you",money(upkeepOf(c.id)/7)+" a day"]];
+    card.appendChild($(`<div class="divider"></div><table>${
+      st.map(([k,v])=>`<tr><td class="l muted">${k}</td><td class="mono">${esc(String(v))}</td></tr>`).join("")}</table>`));
+    w.appendChild(card);
+  }
+
   if(wars.length){
-    const t=$(`<div class="card"></div>`);
-    t.appendChild($(`<div class="eyebrow">At war with</div>`));
+    const t=$(`<div class="card" style="border-color:var(--war)"></div>`);
+    t.appendChild($(`<div class="eyebrow" style="color:var(--war)">Wars you are in</div>`));
     const l=$(`<div class="lst"></div>`);
     wars.forEach(o=>{
-      const row=$(`<div class="between"><div class="row">
-        <span class="flag" style="background:${esc(o.color)}"></span>
-        <span>${esc(o.name)}</span><span class="pill war">war</span></div></div>`);
-      const b=$(`<button class="btn sm">Demand terms</button>`);
+      const left=provsOf(o.id).length, home=o.homeProvs||left;
+      const need=Math.ceil(home*CAPITULATE_AT);
+      const more=Math.max(0,left-need+1);
+      const score=warScore(c.id,o.id);
+      const row=$(`<div>
+        <div class="between"><div class="row">
+          <span class="flag" style="background:${esc(o.color)}"></span>
+          <b>${esc(o.name)}</b></div>
+          <span class="small ${score>1?"up":score<-1?"down":"muted"}">${
+            score>3?"you are winning":score>1?"slightly ahead":score<-3?"you are losing":
+            score<-1?"slightly behind":"even"}</span></div>
+        <div class="small muted" style="margin-top:3px">To conquer them: take
+          <b>${more}</b> more of their provinces, then their capital.</div></div>`);
+      const b=$(`<button class="btn sm" style="margin-top:6px">Try to end the war</button>`);
       b.onclick=()=>openTerms(o.id);
-      row.appendChild(b);l.appendChild(row);
+      row.appendChild(b);
+      l.appendChild(row);
     });
     t.appendChild(l);w.appendChild(t);
   }
   if(pacts.length){
     const t=$(`<div class="card"></div>`);
-    t.appendChild($(`<div class="eyebrow">Defence pacts</div>`));
+    t.appendChild($(`<div class="eyebrow">Your allies</div>`));
+    t.appendChild($(`<div class="small muted">If they are attacked, you join their war. And they join yours.</div>`));
     pacts.forEach(o=>t.appendChild($(`<div class="row small" style="padding:3px 0">
-      <span class="flag" style="background:${esc(o.color)}"></span>${esc(o.name)}
-      <span class="pill pact">defence</span></div>`)));
+      <span class="flag" style="background:${esc(o.color)}"></span>${esc(o.name)}</div>`)));
     w.appendChild(t);
   }
-  // The headline rule he asked for, stated on the screen instead of hidden in a toast.
+
+  // 4. WHAT JUST HAPPENED (the old Log tab, cut to the part anyone reads)
   {
-    const aim=$(`<div class="card"></div>`);
-    aim.appendChild($(`<div class="eyebrow">How a country ends</div>`));
-    aim.appendChild($(`<div class="small muted">Taking a capital only ends a country that has
-      already lost more than half its land. Above that, its government flees to another
-      city and the war goes on. Take the land first, then the capital.</div>`));
-    const list=alive().filter(o=>o.id!==c.id&&atWar(c.id,o.id));
-    list.forEach(o=>{
-      const left=provsOf(o.id).length, home=o.homeProvs||left;
-      const need=Math.ceil(home*CAPITULATE_AT);
-      const done=clamp(1-(left-need)/Math.max(1,home-need),0,1);
-      aim.appendChild($(`<div style="margin-top:7px">
-        <div class="between small"><span>${esc(o.name)}</span>
-        <span class="mono muted">${left} of ${home} left \u00B7 needs ${Math.max(0,left-need+1)} more</span></div>
-        <div class="bar2" style="margin-top:3px"><i style="width:${(done*100).toFixed(0)}%;background:var(--war)"></i></div></div>`));
-    });
-    if(list.length)w.appendChild(aim);
+    const t=$(`<div class="card"></div>`);
+    t.appendChild($(`<div class="eyebrow">Recent news</div>`));
+    if(!G.log.length)t.appendChild($(`<div class="small muted">Nothing has happened yet.</div>`));
+    const l=$(`<div class="lst"></div>`);
+    G.log.slice(0,8).forEach(e=>l.appendChild($(`<div class="small">
+      <span class="mono muted" style="font-size:10px">${esc(dateStr(e.d))}</span>
+      <span style="${e.k==="war"?"color:var(--war)":""}"> ${esc(e.t)}</span></div>`)));
+    t.appendChild(l);
+    if(G.log.length>8){
+      const b=$(`<button class="btn sm" style="margin-top:7px">All the news</button>`);
+      b.onclick=()=>openSheet(sh=>{
+        sh.appendChild($(`<div class="eyebrow">Everything that has happened</div>`));
+        G.log.slice(0,90).forEach(e=>sh.appendChild($(`<div class="small" style="padding:3px 0">
+          <span class="mono muted" style="font-size:10px">${esc(dateStr(e.d))}</span>
+          <span style="${e.k==="war"?"color:var(--war)":""}"> ${esc(e.t)}</span></div>`)));
+      });
+      t.appendChild(b);
+    }
+    w.appendChild(t);
   }
 
   const sv=$(`<div class="card"></div>`);
-  sv.appendChild($(`<div class="eyebrow">Save</div>`));
-  const row=$(`<div class="row"></div>`);
+  sv.appendChild($(`<div class="eyebrow">Game</div>`));
+  const row=$(`<div class="row" style="flex-wrap:wrap"></div>`);
+  const bh=$(`<button class="btn sm">How to play</button>`);
+  bh.onclick=()=>showIntro(0,true);
   const b1=$(`<button class="btn sm">Save now</button>`);
   b1.onclick=()=>{if(saveGame())toast("Saved.","good");};
   const b2=$(`<button class="btn sm d">New game</button>`);
-  b2.onclick=()=>confirmSheet("Start a new game?","This wipes the current campaign.",()=>{
+  b2.onclick=()=>confirmSheet("Start a new game?","This wipes the country you are playing now.",()=>{
     wipeSave();G=null;resetUI();if(CLOCK)clearInterval(CLOCK);CLOCK=null;renderStart();
   });
-  row.appendChild(b1);row.appendChild(b2);sv.appendChild(row);
+  row.appendChild(bh);row.appendChild(b1);row.appendChild(b2);sv.appendChild(row);
   if(G.saveError)sv.appendChild($(`<div class="small" style="color:var(--war);margin-top:6px">Saving is failing. Storage may be full.</div>`));
   w.appendChild(sv);
 }
@@ -2248,170 +2591,168 @@ function panelArmy(w){
   const c=you();
   const arms=armiesOf(c.id);
   const head=$(`<div class="card"></div>`);
-  head.appendChild($(`<div class="eyebrow">Order of battle</div>`));
-  head.appendChild($(`<div class="small muted">Tap an army, then tap a province on the map to move or attack.
-    Armies next to an enemy you are at war with fight on their own. Attack presses the
-    assault, Hold digs in.</div>`));
+  head.appendChild($(`<div class="eyebrow">Your armies</div>`));
+  head.appendChild($(`<div class="small muted">Tap one to give it orders. You can also tap it
+    straight on the map. Armies standing next to an enemy you are at war with fight without
+    being told to.</div>`));
   w.appendChild(head);
   if(!arms.length){
-    w.appendChild($(`<div class="card small muted">No armies in the field. Raise one from the Build tab.</div>`));
+    w.appendChild($(`<div class="card"><div class="small">You have no armies. Raise one from the Build tab,
+      in a city you hold.</div></div>`));
     return;
   }
   const list=$(`<div class="card lst"></div>`);
-  arms.sort((a,b)=>b.troops-a.troops).forEach(a=>{
+  arms.slice().sort((a,b)=>(b.broken?1:0)-(a.broken?1:0)||(b._fighting?1:0)-(a._fighting?1:0)||b.troops-a.troops)
+  .forEach(a=>{
     const g=generalOf(a),p=PV(a.prov);
     const hp=clamp(a.troops/Math.max(1,a.max),0,1);
-    const state=a.broken?`<span class="pill war">broken</span>`
-      :a.moving!=null?`<span class="pill">moving \u00B7 ${a.eta}d</span>`
-      :a.stance==="attack"?`<span class="pill war">attacking</span>`
-      :`<span class="pill">holding</span>`;
-    const fight=a._fighting?`<span class="pill ${a._win?"pact":"war"}">${a._win?"winning":"losing"}</span>`:"";
-    const where=a.moving!=null?`${esc(p?p.name:"?")} \u2192 ${esc(PV(a.moving)?PV(a.moving).name:"?")}`
-      :a.target!=null?`${esc(p?p.name:"?")} vs ${esc(PV(a.target)?PV(a.target).name:"?")}`
-      :esc(p?p.name:"?");
+    const line=a.broken?`Beaten at ${esc(p?p.name:"?")}. Get it out of there.`
+      :a.moving!=null?`Marching to ${esc(PV(a.moving)?PV(a.moving).name:"?")}, ${a.eta} days out.`
+      :a._fighting?`Fighting at ${esc(p?p.name:"?")} and ${a._win?"winning":"losing"}.`
+      :a.stance==="attack"?`Attacking ${esc(PV(a.target)?PV(a.target).name:"?")}.`
+      :`Holding ${esc(p?p.name:"?")}.`;
+    const tone=a.broken||(a._fighting&&!a._win)?"var(--war)":a._fighting?"var(--ok)":"";
     const row=$(`<div>
       <div class="between"><div style="min-width:0">
-        <div style="font-weight:600">${esc(g.name)} ${state} ${fight}</div>
-        <div class="small muted">${where} \u00B7 skill ${g.skill}</div>
+        <div style="font-weight:600">${esc(g.name)}</div>
+        <div class="small" style="color:${tone||"var(--muted)"}">${line}</div>
       </div><div class="mono" style="text-align:right">
-        <div style="font-weight:700">${a.troops}</div><div class="small muted">/${a.max}</div></div></div>
-      <div class="bar2" style="margin-top:4px"><i style="width:${(hp*100).toFixed(0)}%;background:${hp>.5?"var(--ok)":hp>.25?"var(--you)":"var(--war)"}"></i></div>
+        <div style="font-weight:700">${a.troops}</div><div class="small muted">of ${a.max}</div></div></div>
+      <div class="bar2" style="margin-top:4px"><i style="width:${(hp*100).toFixed(0)}%;background:${
+        hp>.5?"var(--ok)":hp>.25?"var(--you)":"var(--war)"}"></i></div>
     </div>`);
-    const acts=$(`<div class="row" style="margin-top:6px;flex-wrap:wrap"></div>`);
-    const sel=$(`<button class="btn sm ${UI.army===a.id?"p":""}">${UI.army===a.id?"Selected":"Select"}</button>`);
-    sel.onclick=()=>{UI.army=UI.army===a.id?null:a.id;paintPanel();paintMap();};
-    acts.appendChild(sel);
-    // He said troops every time, not armies. This is how you feed a unit already at the
-    // front instead of waiting a fortnight for a whole new stack.
-    if(PV(a.prov)&&PV(a.prov).owner===c.id&&a.troops<a.max+REINFORCE_OVER){
-      const rc=reinforceCost(a);
-      const rb=$(`<button class="btn sm">Reinforce \u00B7 ${money(rc.money)}</button>`);
-      rb.disabled=c.treasury<rc.money||c.workers<rc.workers;
-      rb.onclick=()=>{const res=orderReinforce(c.id,a.id);
-        toast(res.ok?`+${res.gain} troops.`:res.msg,res.ok?"good":"war");paintPanel();paintBar();paintMap();};
-      acts.appendChild(rb);
-    }
-    const gb=$(`<button class="btn sm">New general \u00B7 ${GENERAL_PP}pp</button>`);
-    gb.disabled=c.pp<GENERAL_PP;
-    gb.onclick=()=>{const res=replaceGeneral(c.id,a.id);
-      toast(res.ok?`${res.name} takes command. Skill ${res.skill}.`:res.msg||"Cannot.",res.ok?"good":"war");
-      paintPanel();paintBar();};
-    acts.appendChild(gb);
-    if(a.stance==="attack"||a.moving!=null){
-      const h=$(`<button class="btn sm">Hold</button>`);
-      h.onclick=()=>{orderHold(a);paintPanel();paintMap();};
-      acts.appendChild(h);
-    }
-    if(UI.army===a.id){
-      landNeighbors(a.prov).forEach(q=>{
-        const enemy=q.owner!=null&&q.owner!==c.id;
-        const war=enemy&&atWar(c.id,q.owner);
-        if(enemy&&!war)return;
-        const held=war&&zocBlocked(q,c.id);
-        const b=$(`<button class="btn sm ${war?"d":""}">${war?"Attack ":"Move "}${esc(q.name)}</button>`);
-        b.disabled=a.broken&&war;
-        b.onclick=()=>{
-          if(war)orderAttack(a,q.id);else orderMove(a,q.id);
-          UI.army=null;paintPanel();paintMap();
-        };
-        acts.appendChild(b);
-        if(held)acts.appendChild($(`<span class="small muted" style="width:100%">
-          An enemy army beside ${esc(q.name)} is holding that ground. Beat it first.</span>`));
-      });
-      seaReach(a.prov,c.id).forEach(pid=>{
-        const q=PV(pid);
-        if(!q||(q.owner!=null&&q.owner!==c.id&&!atWar(c.id,q.owner)))return;
-        const b=$(`<button class="btn sm">\u2248 Sail to ${esc(q.name)} \u00B7 ${crossingDays(c.id)}d</button>`);
-        b.onclick=()=>{if(orderMove(a,pid))toast(`Crossing to ${q.name}.`);
-          UI.army=null;paintPanel();paintMap();};
-        acts.appendChild(b);
-      });
-    }
-    row.appendChild(acts);
+    const b=$(`<button class="btn sm" style="margin-top:6px">Give orders</button>`);
+    b.onclick=()=>openArmySheet(a.id);
+    row.appendChild(b);
     list.appendChild(row);
   });
   w.appendChild(list);
 }
 
-/* ---- Build ---- */
 function panelBuild(w){
   const c=you();
   const cost=recruitCost(c.id);
-  const q=$(`<div class="card"></div>`);
-  q.appendChild($(`<div class="eyebrow">Production queue</div>`));
-  if(!c.build.length)q.appendChild($(`<div class="small muted">Nothing in production.</div>`));
-  else{
+
+  if(c.build.length){
+    const q=$(`<div class="card"></div>`);
+    q.appendChild($(`<div class="eyebrow">Being built</div>`));
     const l=$(`<div class="lst"></div>`);
     c.build.forEach((b,i)=>{
       const total=b.kind==="army"?RECRUIT_DAYS*8:RECRUIT_DAYS*10;
       const pct=clamp(1-b.left/total,0,1);
       const days=Math.ceil(b.left/Math.max(.1,buildRate(c.id)));
       l.appendChild($(`<div>
-        <div class="between"><span>${b.kind==="army"?"Army at "+esc(PV(b.prov)?PV(b.prov).name:"?"):"Factory"}</span>
-        <span class="mono small muted">${i===0?days+"d":"queued"}</span></div>
+        <div class="between"><span>${b.kind==="army"?"An army for "+esc(PV(b.prov)?PV(b.prov).name:"?"):"A factory"}</span>
+        <span class="mono small muted">${i===0?"ready in "+days+" days":"waiting its turn"}</span></div>
         <div class="bar2" style="margin-top:4px"><i style="width:${(pct*100).toFixed(0)}%;background:var(--you)"></i></div></div>`));
     });
     q.appendChild(l);
+    w.appendChild(q);
   }
-  w.appendChild(q);
 
-  const r=$(`<div class="card"></div>`);
-  r.appendChild($(`<div class="eyebrow">Raise an army</div>`));
-  r.appendChild($(`<div class="small muted">${money(cost.money)} and ${cost.workers} workers. Costs more with every army you already field.</div>`));
-  const cities=provsOf(c.id).filter(p=>p.city);
-  const grid=$(`<div class="row" style="flex-wrap:wrap;margin-top:7px"></div>`);
-  if(!cities.length)grid.appendChild($(`<div class="small muted">No cities held.</div>`));
-  cities.forEach(p=>{
-    const b=$(`<button class="btn sm">${esc(p.name)}</button>`);
-    b.disabled=c.treasury<cost.money||c.workers<cost.workers;
-    b.onclick=()=>{const res=orderRecruit(c.id,p.id);if(!res.ok)toast(res.msg,"war");else toast("Recruitment ordered.");paintPanel();paintBar();};
-    grid.appendChild(b);
-  });
-  r.appendChild(grid);
-  w.appendChild(r);
+  // ARMIES
+  {
+    const r=$(`<div class="card"></div>`);
+    r.appendChild($(`<div class="eyebrow">Raise an army</div>`));
+    r.appendChild($(`<div class="small muted">A new army of about 25 soldiers. Costs
+      <b>${money(cost.money)}</b> and <b>${cost.workers} workers</b>, and takes roughly two weeks.
+      Every army you already have makes the next one dearer, and they cost money every single day.
+      You can have ${ARMY_MAX}. You have ${armiesOf(c.id).length}.</div>`));
+    const cities=provsOf(c.id).filter(p=>p.city);
+    if(!cities.length)r.appendChild($(`<div class="hint" style="margin-top:7px">You hold no cities,
+      so you cannot raise anyone. Take one back.</div>`));
+    const grid=$(`<div class="row" style="flex-wrap:wrap;margin-top:7px"></div>`);
+    cities.forEach(p=>{
+      const b=$(`<button class="btn sm">Raise at ${esc(p.name)}</button>`);
+      b.disabled=c.treasury<cost.money||c.workers<cost.workers;
+      b.onclick=()=>{const res=orderRecruit(c.id,p.id);
+        if(!res.ok)toast(res.msg,"war");else toast("Recruiting. About two weeks.");
+        paintPanel();paintBar();};
+      grid.appendChild(b);
+    });
+    r.appendChild(grid);
+    // topping up beats starting from scratch, and nobody finds it on the map by accident
+    const hurt=armiesOf(c.id).filter(a=>a.troops<a.max&&PV(a.prov)&&PV(a.prov).owner===c.id);
+    if(hurt.length){
+      r.appendChild($(`<div class="divider"></div><div class="eyebrow">Or top up one you have</div>`));
+      r.appendChild($(`<div class="small muted">Cheaper and instant. Only works in your own land.</div>`));
+      const g2=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
+      hurt.sort((a,b)=>(a.troops/a.max)-(b.troops/b.max)).slice(0,5).forEach(a=>{
+        const rc=reinforceCost(a);
+        const b=$(`<button class="btn sm">${esc(generalOf(a).name)} \u00B7 ${a.troops}/${a.max} \u00B7 ${money(rc.money)}</button>`);
+        b.disabled=c.treasury<rc.money||c.workers<rc.workers;
+        b.onclick=()=>{const res=orderReinforce(c.id,a.id);
+          toast(res.ok?`+${res.gain} men.`:res.msg,res.ok?"good":"war");
+          paintPanel();paintBar();paintMap();};
+        g2.appendChild(b);
+      });
+      r.appendChild(g2);
+    }
+    w.appendChild(r);
+  }
 
-  const f=$(`<div class="card"></div>`);
-  f.appendChild($(`<div class="eyebrow">Factories</div>`));
-  f.appendChild($(`<div class="between"><div class="small muted" style="flex:1">
-    National industry: ${c.factories} factories, finishing ${buildRate(c.id).toFixed(1)} points of work a day.
-    They are not on the map, so capturing a city does not capture its factories.</div></div>`));
-  const fb=$(`<button class="btn sm" style="margin-top:7px">Build factory \u00B7 ${money(factoryCost(c))}</button>`);
-  fb.disabled=c.treasury<factoryCost(c);
-  fb.onclick=()=>{const res=orderFactory(c.id);if(!res.ok)toast(res.msg||"Cannot build.","war");else toast("Factory ordered.");paintPanel();paintBar();};
-  f.appendChild(fb);
-  w.appendChild(f);
+  // FACTORIES
+  {
+    const f=$(`<div class="card"></div>`);
+    f.appendChild($(`<div class="eyebrow">Build a factory</div>`));
+    f.appendChild($(`<div class="small muted">Factories make everything in the build queue finish faster.
+      They are national, not on the map, so losing a city does not lose you a factory.
+      You have <b>${c.factories}</b>.</div>`));
+    const fb=$(`<button class="btn sm" style="margin-top:7px">Build one \u00B7 ${money(factoryCost(c))}</button>`);
+    fb.disabled=c.treasury<factoryCost(c);
+    fb.onclick=()=>{const res=orderFactory(c.id);
+      if(!res.ok)toast(res.msg||"Cannot build.","war");else toast("Factory ordered.");
+      paintPanel();paintBar();};
+    f.appendChild(fb);
+    w.appendChild(f);
+  }
 
-  const fo=$(`<div class="card"></div>`);
-  fo.appendChild($(`<div class="eyebrow">Fortify</div>`));
-  fo.appendChild($(`<div class="small muted">Forts make a province harder to take. Front line provinces first.</div>`));
-  const front=provsOf(c.id).filter(p=>p.nb.some(n=>{const z=PV(n);return z&&!z.sea&&z.owner!=null&&z.owner!==c.id;}));
-  const fg=$(`<div class="row" style="flex-wrap:wrap;margin-top:7px"></div>`);
-  (front.length?front:provsOf(c.id)).slice(0,14).forEach(p=>{
-    const b=$(`<button class="btn sm">${esc(p.name)} ${"|".repeat(p.fort)||"\u00B7"} ${money(fortCost(p))}</button>`);
-    b.disabled=c.treasury<fortCost(p)||p.fort>=4;
-    b.onclick=()=>{const res=orderFortify(c.id,p.id);if(!res.ok)toast(res.msg,"war");else toast(`${p.name} fortified.`,"good");paintPanel();paintBar();paintMap();};
-    fg.appendChild(b);
-  });
-  fo.appendChild(fg);
-  w.appendChild(fo);
+  // WALLS
+  {
+    const fo=$(`<div class="card"></div>`);
+    fo.appendChild($(`<div class="eyebrow">Build walls</div>`));
+    fo.appendChild($(`<div class="small muted">Walls make a province slower to take, and they work even
+      when no army is standing there. Build them on the border, not in the middle.</div>`));
+    const front=provsOf(c.id).filter(p=>p.nb.some(n=>{const z=PV(n);return z&&!z.sea&&z.owner!=null&&z.owner!==c.id;}));
+    const list=(front.length?front:provsOf(c.id));
+    const fg=$(`<div class="row" style="flex-wrap:wrap;margin-top:7px"></div>`);
+    list.slice(0,12).forEach(p=>{
+      const b=$(`<button class="btn sm">${esc(p.name)} \u00B7 walls ${p.fort}/4 \u00B7 ${money(fortCost(p))}</button>`);
+      b.disabled=c.treasury<fortCost(p)||p.fort>=4;
+      b.onclick=()=>{const res=orderFortify(c.id,p.id);
+        if(!res.ok)toast(res.msg,"war");else toast(`${p.name} is better defended.`,"good");
+        paintPanel();paintBar();paintMap();};
+      fg.appendChild(b);
+    });
+    if(front.length)fo.appendChild($(`<div class="small muted" style="margin-top:5px">These are the ones on your border.</div>`));
+    fo.appendChild(fg);
+    w.appendChild(fo);
+  }
 }
 
 /* ---- Research ---- */
 function panelResearch(w){
   const c=you();
+  if(!c.research)w.appendChild($(`<div class="card"><div class="eyebrow">Research</div>
+    <div class="small">You can research one thing at a time. It costs money up front and then takes
+    weeks, so start something now rather than saving up. Nothing here is wasted.</div></div>`));
   if(c.research){
     const t=TECH_BY[c.research.k];
     const pct=clamp(1-c.research.left/c.research.total,0,1);
     const card=$(`<div class="card"></div>`);
     card.appendChild($(`<div class="eyebrow">In progress</div>`));
     card.appendChild($(`<div class="between"><b>${esc(t.label)} \u00B7 level ${c.tech[t.k]+1}</b>
-      <span class="mono small muted">${c.research.left}d</span></div>
+      <span class="mono small muted">${c.research.left} days left</span></div>
       <div class="bar2" style="margin-top:5px"><i style="width:${(pct*100).toFixed(0)}%;background:var(--you)"></i></div>`));
     w.appendChild(card);
   }
+  const blurbs={Land:"Makes your soldiers better in a fight.",
+    Defence:"Makes your land harder to take. Each one unlocks the next.",
+    Industry:"Money, building speed and how far your armies can go."};
   ["Land","Defence","Industry"].forEach(col=>{
     const card=$(`<div class="card"></div>`);
     card.appendChild($(`<div class="eyebrow">${col}</div>`));
+    card.appendChild($(`<div class="small muted" style="margin-bottom:4px">${blurbs[col]}</div>`));
     const l=$(`<div class="lst"></div>`);
     TECH.filter(t=>t.col===col).forEach(t=>{
       const lvl=c.tech[t.k],maxed=lvl>=t.max,cost=techCost(c,t);
@@ -2433,19 +2774,27 @@ function panelResearch(w){
 }
 
 /* ---- Diplomacy ---- */
-function panelDiplo(w){
-  const c=you();
-  // pending offers first: these are decisions waiting on the player
-  const pending=[];
+/* Decisions that are waiting on the player. Pulled out of the old Talks tab so the
+   same list can head the World tab and drive the alerts strip. */
+function pendingDecisions(){
+  const c=you(),out=[];
   for(const k in G.rel){
     const r=G.rel[k];
-    if(r.offer&&CO(r.offer.from)&&CO(r.offer.from).alive)pending.push({r,from:r.offer.from});
-    if(r.demand&&CO(r.demand.from)&&CO(r.demand.from).alive)pending.push({r,demand:r.demand});
+    if(r.offer&&CO(r.offer.from)&&CO(r.offer.from).alive)out.push({r,from:r.offer.from});
+    if(r.demand&&CO(r.demand.from)&&CO(r.demand.from).alive)out.push({r,demand:r.demand});
     if(r.ready&&r.ready.by===c.id){
       const [a,b]=k.split(":").map(Number);
-      pending.push({r,ready:(a===c.id?b:a)});
+      out.push({r,ready:(a===c.id?b:a)});
     }
   }
+  return out;
+}
+/* One tab for everything to do with other countries: who is winning, who likes you,
+   and every button you can press at them. Standings and diplomacy were two tabs that
+   both listed all eight nations, which meant scrolling twice to answer one question. */
+function panelWorld(w){
+  const c=you();
+  const pending=pendingDecisions();
   if(pending.length){
     const card=$(`<div class="card" style="border-color:var(--you)"></div>`);
     card.appendChild($(`<div class="eyebrow" style="color:var(--you)">Waiting on you</div>`));
@@ -2454,176 +2803,122 @@ function panelDiplo(w){
       if(x.demand){
         const o=CO(x.demand.from),pr=PV(x.demand.prov);
         if(!o||!pr){x.r.demand=null;return;}
-        const row=$(`<div><div class="row" style="margin-bottom:5px">
-          <span class="flag" style="background:${esc(o.color)}"></span>
-          <span style="flex:1">${esc(o.name)} will end the war if you hand over
-          <b>${esc(pr.name)}</b>. <span class="mono muted">${Math.max(0,x.demand.until-G.day)}d</span></span></div></div>`);
+        const row=$(`<div><div class="small" style="margin-bottom:5px">
+          <b>${esc(o.name)}</b> will stop the war if you give them <b>${esc(pr.name)}</b>.</div></div>`);
         const acts=$(`<div class="row"></div>`);
-        const y=$(`<button class="btn sm d">Give ${esc(pr.name)}</button>`);
-        y.onclick=()=>{
-          setProvinceOwner(pr.id,o.id);
-          makePeace(G.you,o.id);
-          x.r.demand=null;
-          logAdd(`You cede ${pr.name} to ${o.name} for peace.`);
-          toast("The war is over.","good");render();
-        };
-        const n=$(`<button class="btn sm">Fight on</button>`);
-        n.onclick=()=>{x.r.demand=null;nudgeStance(G.you,o.id,-6);toast("You refuse.","war");render();};
+        const y=$(`<button class="btn sm d">Give it up, end the war</button>`);
+        y.onclick=()=>{setProvinceOwner(pr.id,o.id);makePeace(c.id,o.id);x.r.demand=null;
+          logAdd(`You gave ${pr.name} to ${o.name} for peace.`);toast("The war is over.","good");render();};
+        const n=$(`<button class="btn sm">Keep fighting</button>`);
+        n.onclick=()=>{x.r.demand=null;nudgeStance(c.id,o.id,-6);toast("You refused.","war");render();};
         acts.appendChild(y);acts.appendChild(n);row.appendChild(acts);l.appendChild(row);
         return;
       }
       if(x.from!=null){
         const o=CO(x.from);
-        const row=$(`<div><div class="row" style="margin-bottom:5px">
-          <span class="flag" style="background:${esc(o.color)}"></span>
-          <span style="flex:1">${esc(o.name)} proposes a defence pact.
-          <span class="mono muted">${Math.max(0,x.r.offer.until-G.day)}d</span></span></div></div>`);
+        const row=$(`<div><div class="small" style="margin-bottom:5px">
+          <b>${esc(o.name)}</b> wants a defence pact. If either of you is attacked, the other joins in.</div></div>`);
         const acts=$(`<div class="row"></div>`);
         const y=$(`<button class="btn sm p">Accept</button>`);
         y.onclick=()=>{formPact(c.id,o.id,"defense");x.r.offer=null;
-          logAdd(`You sign a defence pact with ${o.name}.`);toast("Pact signed.","good");paintPanel();render();};
-        const n=$(`<button class="btn sm">Decline</button>`);
-        n.onclick=()=>{x.r.offer=null;nudgeStance(c.id,o.id,-8);toast("Declined.");paintPanel();render();};
+          logAdd(`You signed a defence pact with ${o.name}.`);toast("Pact signed.","good");render();};
+        const n=$(`<button class="btn sm">No thanks</button>`);
+        n.onclick=()=>{x.r.offer=null;nudgeStance(c.id,o.id,-8);render();};
         acts.appendChild(y);acts.appendChild(n);row.appendChild(acts);l.appendChild(row);
-      }else{
-        const o=CO(x.ready);
-        if(!o||!o.alive){x.r.ready=null;return;}
-        const row=$(`<div><div class="row" style="margin-bottom:5px">
-          <span class="flag" style="background:${esc(o.color)}"></span>
-          <span style="flex:1">War on ${esc(o.name)} is justified.
-          <span class="mono small muted">${Math.max(0,x.r.ready.until-G.day)}d</span></span></div></div>`);
-        const b=$(`<button class="btn sm d">Declare war</button>`);
-        b.onclick=()=>confirmSheet(`Declare war on ${o.name}?`,
-          "Their allies will be pulled in with them.",()=>{
-            x.r.ready=null;declareWar(c.id,o.id);render();});
-        row.appendChild(b);l.appendChild(row);
+        return;
       }
+      const o=CO(x.ready);
+      if(!o||!o.alive){x.r.ready=null;return;}
+      const row=$(`<div><div class="small" style="margin-bottom:5px">
+        You are ready to declare war on <b>${esc(o.name)}</b>.
+        <span class="muted">Offer expires in ${Math.max(0,x.r.ready.until-G.day)} days.</span></div></div>`);
+      const bb=$(`<button class="btn sm d">Declare war</button>`);
+      bb.onclick=()=>confirmSheet(`Declare war on ${o.name}?`,
+        "Anyone they have a pact with will join their side.",()=>{
+          x.r.ready=null;declareWar(c.id,o.id);render();});
+      row.appendChild(bb);l.appendChild(row);
     });
     card.appendChild(l);w.appendChild(card);
   }
 
-  const others=alive().filter(o=>o.id!==c.id)
-    .sort((a,b)=>stanceOf(c.id,b.id)-stanceOf(c.id,a.id));
-  const borders=bordersWith(c.id);
-  const card=$(`<div class="card"></div>`);
-  card.appendChild($(`<div class="eyebrow">Nations</div>`));
-  card.appendChild($(`<div class="small muted">Opinion runs from -100 to 100. It decides whether a pact is accepted and whether you are a target.</div>`));
-  const l=$(`<div class="lst"></div>`);
-  others.forEach(o=>{
-    const r=rel(c.id,o.id);
-    const s=r.stance;
-    const tags=[];
-    if(r.war)tags.push(`<span class="pill war">war</span>`);
-    if(r.pact)tags.push(`<span class="pill pact">defence pact</span>`);
-    if(r.justify)tags.push(`<span class="pill just">${r.justify.by===c.id?"justifying":"justified against you"}</span>`);
-    if(r.truce>G.day)tags.push(`<span class="pill">truce</span>`);
-    if(borders.includes(o.id))tags.push(`<span class="pill">border</span>`);
-    const w2=clamp((s+100)/2,0,100);
-    const row=$(`<div>
-      <div class="between"><div class="row" style="min-width:0">
-        <span class="flag" style="background:${esc(o.color)}"></span>
-        <span style="font-weight:600">${esc(o.name)}</span></div>
-        <span class="mono small ${s>=0?"up":"down"}">${s>0?"+":""}${Math.round(s)}</span></div>
-      <div class="small muted">${provsOf(o.id).length} provinces \u00B7 ${armiesOf(o.id).reduce((a,x)=>a+x.troops,0)} troops
-        \u00B7 ${esc((PERSONALITIES.find(p=>p.k===o.personality)||{}).label||"")}</div>
-      <div class="bar2" style="margin-top:4px"><i style="width:${w2}%;background:${s>=0?"var(--pact)":"var(--war)"}"></i></div>
-      <div class="row" style="flex-wrap:wrap;margin-top:5px">${tags.join(" ")}</div>
-    </div>`);
-    const acts=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
-    if(!r.war&&!r.pact){
-      const b=$(`<button class="btn sm">Propose pact</button>`);
-      b.disabled=G.day-r.lastAsk<45;
-      b.onclick=()=>{
-        const ok=proposeAlliance(c.id,o.id);
-        toast(ok?`${o.name} accepts.`:`${o.name} refuses.`,ok?"good":"war");
-        logAdd(ok?`You sign a defence pact with ${o.name}.`:`${o.name} refuses a pact.`);
-        paintPanel();render();
-      };
-      acts.appendChild(b);
-    }
-    if(r.pact){
-      const b=$(`<button class="btn sm d">Break pact</button>`);
-      b.onclick=()=>confirmSheet(`Break the pact with ${o.name}?`,
-        "Every nation will think less of you.",()=>{
-          breakPact(c.id,o.id);alive().forEach(x=>{if(x.id!==c.id)nudgeStance(x.id,c.id,-8);});
-          toast("Pact broken.","war");render();});
-      acts.appendChild(b);
-    }
-    if(!r.war&&!r.justify&&!r.ready&&borders.includes(o.id)&&r.truce<G.day){
-      const cost=Math.round(JUSTIFY_PP*(1+o.tech.nuke*.7));
-      const b=$(`<button class="btn sm d">Justify war \u00B7 ${cost}pp</button>`);
-      b.disabled=c.pp<cost;
-      b.onclick=()=>{
-        const res=startJustify(c.id,o.id);
-        if(!res.ok)toast(res.msg,"war");
-        else toast(`Justification started. ${JUSTIFY_DAYS} days.`);
-        paintPanel();paintBar();render();
-      };
-      acts.appendChild(b);
-    }
-    if(r.war){
-      const b=$(`<button class="btn sm">Demand terms</button>`);
-      b.onclick=()=>openTerms(o.id);
-      acts.appendChild(b);
-    }
-    if(r.justify&&r.justify.by===c.id)
-      acts.appendChild($(`<span class="small muted mono">${Math.max(0,r.justify.until-G.day)} days to justify</span>`));
-    row.appendChild(acts);
-    l.appendChild(row);
-  });
-  card.appendChild(l);
-  w.appendChild(card);
-}
-
-/* ---- World: who is biggest, who is fighting whom. Log is a designer's tab; this is
-   the one a twelve-year-old opens, because it answers "am I winning". ---- */
-function panelWorld(w){
-  const me=you();
   const rows=alive().slice().sort((a,b)=>provsOf(b.id).length-provsOf(a.id).length);
   const total=G.provinces.filter(p=>!p.sea).length;
   const card=$(`<div class="card"></div>`);
-  card.appendChild($(`<div class="eyebrow">Standings</div>`));
-  card.appendChild($(`<div class="small muted">${alive().length} nations left of ${G.countries.length}.</div>`));
+  card.appendChild($(`<div class="eyebrow">Every nation</div>`));
+  card.appendChild($(`<div class="small muted">${alive().length} left of ${G.countries.length}.
+    The green bar under each one is how much they like you.</div>`));
   const l=$(`<div class="lst"></div>`);
   rows.forEach((o,i)=>{
+    const isMe=o.id===c.id;
     const land=provsOf(o.id).length;
     const troops=armiesOf(o.id).reduce((a,x)=>a+x.troops,0);
-    const isMe=o.id===me.id;
+    const r=isMe?null:rel(c.id,o.id);
     const tags=[];
-    if(!isMe&&atWar(me.id,o.id))tags.push(`<span class="pill war">at war with you</span>`);
-    if(!isMe&&hasPact(me.id,o.id))tags.push(`<span class="pill pact">pact</span>`);
-    const fighting=alive().filter(x=>x.id!==o.id&&atWar(o.id,x.id));
-    if(fighting.length&&!(!isMe&&atWar(me.id,o.id)))
-      tags.push(`<span class="pill war">fighting ${esc(fighting.map(x=>x.name).join(", "))}</span>`);
-    l.appendChild($(`<div style="${isMe?"border-left:3px solid var(--you);padding-left:7px":""}">
+    if(r&&r.war)tags.push(`<span class="pill war">at war with you</span>`);
+    if(r&&r.pact)tags.push(`<span class="pill pact">your ally</span>`);
+    if(r&&r.justify)tags.push(`<span class="pill just">${r.justify.by===c.id?"you are preparing":"preparing to attack you"}</span>`);
+    if(r&&r.truce>G.day)tags.push(`<span class="pill">truce</span>`);
+    const fights=alive().filter(x=>x.id!==o.id&&atWar(o.id,x.id)&&(!r||x.id!==c.id));
+    if(fights.length)tags.push(`<span class="pill war">fighting ${esc(fights.map(x=>x.name).join(", "))}</span>`);
+
+    const row=$(`<div style="${isMe?"border-left:3px solid var(--you);padding-left:8px":""}">
       <div class="between">
         <div class="row" style="min-width:0">
-          <span class="mono muted" style="font-size:11px;width:16px">${i+1}</span>
+          <span class="mono muted" style="font-size:11px;width:14px">${i+1}</span>
           <span class="flag" style="background:${esc(o.color)}"></span>
           <span style="font-weight:${isMe?700:600}">${esc(o.name)}${isMe?" (you)":""}</span>
         </div>
-        <span class="mono small">${land} \u00B7 ${troops}</span>
+        <span class="mono small">${land} land \u00B7 ${troops} men</span>
       </div>
       <div class="small muted">${esc(o.blurb||"")}</div>
-      <div class="bar2" style="margin-top:4px"><i style="width:${(land/Math.max(1,total)*100*3).toFixed(0)}%;background:${esc(o.color)}"></i></div>
+      ${r?`<div class="bar2" style="margin-top:4px"><i style="width:${clamp((r.stance+100)/2,0,100)}%;
+        background:${r.stance>=0?"var(--pact)":"var(--war)"}"></i></div>`:""}
       <div class="row" style="flex-wrap:wrap;margin-top:4px">${tags.join(" ")}</div>
-    </div>`));
-  });
-  card.appendChild(l);
-  card.appendChild($(`<div class="small muted" style="margin-top:6px">Columns are provinces and troops.</div>`));
-  w.appendChild(card);
-}
+    </div>`);
 
-/* ---- Log ---- */
-function panelLog(w){
-  const card=$(`<div class="card"></div>`);
-  card.appendChild($(`<div class="eyebrow">Dispatches</div>`));
-  const l=$(`<div class="lst"></div>`);
-  if(!G.log.length)l.appendChild($(`<div class="small muted">Nothing has happened yet.</div>`));
-  G.log.slice(0,90).forEach(e=>{
-    l.appendChild($(`<div class="small">
-      <span class="mono muted" style="font-size:10px">${esc(dateStr(e.d))}</span><br>
-      <span style="${e.k==="war"?"color:var(--war)":""}">${esc(e.t)}</span></div>`));
+    if(!isMe){
+      const acts=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
+      if(r.war){
+        const b=$(`<button class="btn sm">Try to end the war</button>`);
+        b.onclick=()=>openTerms(o.id);
+        acts.appendChild(b);
+      }else{
+        if(!r.pact){
+          const b=$(`<button class="btn sm">Ask for a pact</button>`);
+          b.disabled=G.day-r.lastAsk<45;
+          b.onclick=()=>{
+            const ok=proposeAlliance(c.id,o.id);
+            toast(ok?`${o.name} agreed.`:`${o.name} said no.`,ok?"good":"war");
+            logAdd(ok?`You signed a defence pact with ${o.name}.`:`${o.name} refused a pact.`);
+            render();
+          };
+          acts.appendChild(b);
+        }else{
+          const b=$(`<button class="btn sm d">Break the pact</button>`);
+          b.onclick=()=>confirmSheet(`Break your pact with ${o.name}?`,
+            "Every other nation will trust you less.",()=>{
+              breakPact(c.id,o.id);alive().forEach(x=>{if(x.id!==c.id)nudgeStance(x.id,c.id,-8);});
+              toast("Pact broken.","war");render();});
+          acts.appendChild(b);
+        }
+        if(!r.justify&&!r.ready&&bordersWith(c.id).includes(o.id)&&r.truce<G.day){
+          const cost=Math.round(JUSTIFY_PP*(1+o.tech.nuke*.7));
+          const b=$(`<button class="btn sm d">Prepare a war \u00B7 ${cost} influence</button>`);
+          b.disabled=c.pp<cost||G.day<OPENING_PEACE;
+          b.onclick=()=>{
+            const res=startJustify(c.id,o.id);
+            if(!res.ok)toast(res.msg,"war");
+            else toast(`Preparing. You can declare in ${JUSTIFY_DAYS} days, and they will see it coming.`,"war");
+            render();
+          };
+          acts.appendChild(b);
+        }
+      }
+      if(r.justify&&r.justify.by===c.id)
+        acts.appendChild($(`<span class="small muted">${Math.max(0,r.justify.until-G.day)} days until you can declare</span>`));
+      row.appendChild(acts);
+    }
+    l.appendChild(row);
   });
   card.appendChild(l);
   w.appendChild(card);
@@ -2669,6 +2964,27 @@ function confirmSheet(title,body,onYes){
 }
 /* Demand terms: the third verb. A war that can only end in annexation or a coin flip
    has a map payoff and no diplomatic one, which is half a grand strategy game. */
+/* Nobody can guess what a small white square means. */
+function openLegend(){
+  openSheet(sh=>{
+    sh.appendChild($(`<div class="eyebrow">Map symbols</div>`));
+    const rows=[
+      ["\u2605","White star","A capital city. Take a nation's capital, once they have lost half their land, and the whole nation is yours."],
+      ["\u25A0","Small white square","A city. Cities are worth more money and are the only places you can raise an army."],
+      ["\u25AE\u25AE","Small bars at the bottom","Walls. More bars means harder to take, even if no army is there."],
+      ["42","Box with a number","An army, and how many soldiers are in it. White edge means it is yours."],
+      ["\u2620","Skull on a box","That army is beaten. It cannot attack and will be destroyed if the enemy walks in."],
+      ["\u2192","Green or red arrow","A battle. Green means the side it points from is winning."],
+      ["\u25CB","Red ring around a province","An enemy army is right next to it. If the ring is filling up, they are knocking the walls down."],
+      ["","Faded colours","Every nation except you is faded, so your own land is easy to find."]];
+    const l=$(`<div class="lst"></div>`);
+    rows.forEach(([g,n,d])=>l.appendChild($(`<div class="row" style="align-items:flex-start;gap:9px">
+      <span class="mono" style="width:22px;text-align:center;color:var(--you);font-size:14px">${esc(g)}</span>
+      <span style="flex:1;min-width:0"><b class="small">${esc(n)}</b>
+      <span class="small muted" style="display:block">${esc(d)}</span></span></div>`)));
+    sh.appendChild(l);
+  });
+}
 function openTerms(themId){
   const me=G.you, them=CO(themId);
   if(!them)return;
@@ -2680,9 +2996,8 @@ function openTerms(themId){
       :score>-1?"Neither side is winning.":score>-4?"You are losing.":"You are being beaten.";
     sh.appendChild($(`<div class="eyebrow">Terms with ${esc(them.name)}</div>`));
     sh.appendChild($(`<h3>${esc(verdict)}</h3>`));
-    sh.appendChild($(`<div class="small muted">War score <b class="mono">${score>0?"+":""}${score.toFixed(1)}</b>
-      after ${len} days. It rises with provinces you take from them and with the size of
-      your army against theirs.</div>`));
+    sh.appendChild($(`<div class="small muted">${len} days of fighting. Take more of their land, or have the
+      bigger army, and they will agree to more.</div>`));
 
     sh.appendChild($(`<div class="divider"></div><div class="eyebrow">White peace</div>`));
     sh.appendChild($(`<div class="small muted">Both stop. Everyone keeps what they hold today.</div>`));
@@ -2704,9 +3019,9 @@ function openTerms(themId){
         they are beaten badly enough, and a walled city costs more.</div>`));
       const g=$(`<div class="row" style="flex-wrap:wrap;margin-top:6px"></div>`);
       want.sort((a,b)=>(b.city?1:0)-(a.city?1:0)||b.pop-a.pop).slice(0,8).forEach(q=>{
-        const bar=(3.2+(q.city?1.6:0)+q.fort*.5).toFixed(1);
-        const b=$(`<button class="btn sm ${score>=+bar?"p":""}">${esc(q.name)}${q.city?" \u00B7 city":""}
-          <span class="mono">${bar}</span></button>`);
+        const bar=3.2+(q.city?1.6:0)+q.fort*.5;
+        const b=$(`<button class="btn sm ${score>=bar?"p":""}">${esc(q.name)}${q.city?" \u00B7 city":""}
+          ${score>=bar?"":'<span class="muted">they will refuse</span>'}</button>`);
         b.onclick=()=>{
           const res=termsOffer(me,themId,"demand",q.id);
           toast(res.msg,res.ok?"good":"war");
@@ -2737,71 +3052,224 @@ function openTerms(themId){
     }
   });
 }
+/* Tapping the map is how you play. Tap your own army and the orders come up right
+   there, named and in plain words. Previously you had to find the Army tab, find the
+   army in a list, press Select, then find the right button, while the clock ran. */
+function openArmySheet(id){
+  const a=AR(id);
+  if(!a)return;
+  const c=you();
+  UI.army=id;UI.sel=a.prov;
+  paintMap();
+  openSheet(sh=>{
+    const g=generalOf(a), here=PV(a.prov);
+    const hp=clamp(a.troops/Math.max(1,a.max),0,1);
+    sh.appendChild($(`<div class="eyebrow">Your army at ${esc(here?here.name:"?")}</div>`));
+    sh.appendChild($(`<div class="between"><h3 style="margin:0">${esc(g.name)}</h3>
+      <span class="mono" style="font-weight:700">${a.troops} men</span></div>`));
+    sh.appendChild($(`<div class="bar2" style="margin:5px 0 7px"><i style="width:${(hp*100).toFixed(0)}%;
+      background:${hp>.5?"var(--ok)":hp>.25?"var(--you)":"var(--war)"}"></i></div>`));
+    const status=a.broken?"Beaten. It will be destroyed if it stays and fights."
+      :a.moving!=null?`Marching to ${esc(PV(a.moving)?PV(a.moving).name:"?")}, arrives in ${a.eta} days.`
+      :a._fighting?(a._win?"Fighting and winning.":"Fighting and losing.")
+      :a.stance==="attack"?"Pressing an attack.":"Holding position.";
+    sh.appendChild($(`<div class="small ${a.broken||(a._fighting&&!a._win)?"":"muted"}"
+      style="${a.broken?"color:var(--war)":""}">${esc(status)}</div>`));
+
+    if(a.moving!=null){
+      const b=$(`<button class="btn" style="width:100%;margin-top:9px">Stop and hold here</button>`);
+      b.onclick=()=>{orderHold(a);closeSheet();paintMap();paintPanel();};
+      sh.appendChild(b);
+      return;
+    }
+
+    sh.appendChild($(`<div class="divider"></div><div class="eyebrow">Send it where</div>`));
+    const targets=moveTargets(a);
+    if(!targets.length)
+      sh.appendChild($(`<div class="small muted">Nowhere to go from here.</div>`));
+    targets.forEach(t=>{
+      const q=t.p;
+      const owner=CO(q.owner);
+      const enemyArmies=armiesAt(q.id).filter(x=>x.owner!==c.id);
+      const held=t.kind==="attack"&&zocBlocked(q,c.id);
+      const label=t.kind==="attack"?`Attack ${esc(q.name)}`
+        :t.kind==="sail"?`Sail to ${esc(q.name)}`:`March to ${esc(q.name)}`;
+      const sub=t.kind==="attack"
+        ? `${esc(owner?owner.name:"nobody")}\u2019s land \u00B7 ${enemyArmies.length?`${enemyArmies.reduce((s2,x)=>s2+x.troops,0)} men defending`:"undefended"}`+
+          (siegeNeed(q)?` \u00B7 walls hold`:"")
+        : t.kind==="sail" ? `across the water \u00B7 ${crossingDays(c.id)} days`
+        : `your own land \u00B7 ${Math.max(1,MOVE_DAYS-(c.tech.logistics||0)*.5|0)} days`;
+      const b=$(`<button class="btn ${t.kind==="attack"?"d":""}" style="width:100%;margin-top:5px;text-align:left">
+        <div>${label}</div><div class="small muted" style="font-weight:400">${sub}</div></button>`);
+      b.onclick=()=>{
+        if(t.kind==="attack")orderAttack(a,q.id);else orderMove(a,q.id);
+        UI.army=null;closeSheet();paintMap();paintPanel();
+      };
+      sh.appendChild(b);
+      if(held)sh.appendChild($(`<div class="hint" style="margin-top:4px">You can batter the walls,
+        but an enemy army beside ${esc(q.name)} stops you walking in. Beat that army first.</div>`));
+    });
+
+    sh.appendChild($(`<div class="divider"></div>`));
+    const row=$(`<div class="row" style="flex-wrap:wrap"></div>`);
+    if(a.stance==="attack"||a.target!=null){
+      const h=$(`<button class="btn sm">Stop attacking, dig in</button>`);
+      h.onclick=()=>{orderHold(a);closeSheet();paintMap();paintPanel();};
+      row.appendChild(h);
+    }
+    if(here&&here.owner===c.id&&a.troops<a.max+REINFORCE_OVER){
+      const rc=reinforceCost(a);
+      const rb=$(`<button class="btn sm">Send ${money(rc.money)} of reinforcements</button>`);
+      rb.disabled=c.treasury<rc.money||c.workers<rc.workers;
+      rb.onclick=()=>{const res=orderReinforce(c.id,a.id);
+        toast(res.ok?`+${res.gain} men.`:res.msg,res.ok?"good":"war");
+        closeSheet();paintMap();paintBar();paintPanel();};
+      row.appendChild(rb);
+    }
+    sh.appendChild(row);
+  });
+}
 function openProvince(pid){
   const p=PV(pid);
-  if(!p||p.sea){paintMap();return;}
+  if(!p||p.sea){UI.army=null;paintMap();return;}
   const c=you();
-  // an army is selected and this hex is next to it: treat the tap as an order
+
+  // an army is already selected and this is a legal target: just give the order
   if(UI.army!=null&&AR(UI.army)){
     const a=AR(UI.army);
-    if(PV(a.prov).nb.includes(pid)){
-      if(p.owner!=null&&p.owner!==c.id&&atWar(c.id,p.owner)){
-        if(orderAttack(a,pid)){UI.army=null;toast(`Attacking ${p.name}.`,"war");paintMap();paintPanel();return;}
-      }else if(canMove(a,pid)){
-        orderMove(a,pid);UI.army=null;toast(`Marching on ${p.name}.`);paintMap();paintPanel();return;
-      }
+    const t=moveTargets(a).find(x=>x.p.id===pid);
+    if(t){
+      if(t.kind==="attack"){orderAttack(a,pid);toast(`Attacking ${p.name}.`,"war");}
+      else {orderMove(a,pid);toast(t.kind==="sail"?`Sailing to ${p.name}.`:`Marching to ${p.name}.`);}
+      UI.army=null;paintMap();paintPanel();return;
     }
+    if(a.prov!==pid){UI.army=null;paintMap();}
   }
+  // your own army standing here: command it
+  const mine=armiesAt(pid).filter(x=>x.owner===c.id);
+  if(mine.length===1)return openArmySheet(mine[0].id);
+  if(mine.length>1){
+    return openSheet(sh=>{
+      sh.appendChild($(`<div class="eyebrow">${esc(p.name)}</div>`));
+      sh.appendChild($(`<h3>${mine.length} of your armies are here</h3>`));
+      mine.forEach(a=>{
+        const b=$(`<button class="btn" style="width:100%;margin-top:5px;text-align:left">
+          <div>${esc(generalOf(a).name)}</div>
+          <div class="small muted" style="font-weight:400">${a.troops} men${a.broken?" \u00B7 beaten":""}</div></button>`);
+        b.onclick=()=>{closeSheet();openArmySheet(a.id);};
+        sh.appendChild(b);
+      });
+    });
+  }
+  // otherwise: what is this place, in words
   openSheet(sh=>{
     const o=CO(p.owner);
-    sh.appendChild($(`<div class="eyebrow">${esc(TERRAIN[p.terrain].label)}${p.capital?" \u00B7 capital":p.city?" \u00B7 city":""}</div>`));
+    const mineLand=p.owner===c.id;
+    sh.appendChild($(`<div class="eyebrow">${mineLand?"Yours":o?esc(o.name)+"\u2019s land":"No man\u2019s land"}</div>`));
     sh.appendChild($(`<div class="between"><h3 style="margin:0">${esc(p.name)}</h3>
-      ${o?`<span class="row"><span class="flag" style="background:${esc(o.color)}"></span>
-      <span class="small">${esc(o.name)}</span></span>`:""}</div>`));
-    sh.appendChild($(`<table style="margin-top:7px">
-      <tr><td class="l muted">Population</td><td class="mono">${p.pop}</td></tr>
-      <tr><td class="l muted">Defence terrain</td><td class="mono">x${TERRAIN[p.terrain].def.toFixed(2)}</td></tr>
-      <tr><td class="l muted">Fortification</td><td class="mono">${p.fort}/4</td></tr>
-      <tr><td class="l muted">Holds against</td><td class="mono">${siegeNeed(p)?siegeNeed(p)+" siege":"nothing"}</td></tr>
-      ${p.siege>0?`<tr><td class="l muted">Under siege</td><td class="mono" style="color:var(--war)">${Math.round(p.siege)}/${siegeNeed(p)}</td></tr>`:""}
-      <tr><td class="l muted">Tax value</td><td class="mono">${money(p.pop*.5*TERRAIN[p.terrain].income*(p.city?1.5:1)/7)}/day</td></tr>
-      </table>`));
-    if(p.owner!=null&&p.owner!==c.id&&atWar(c.id,p.owner)&&zocBlocked(p,c.id)){
+      ${o?`<span class="row"><span class="flag" style="background:${esc(o.color)}"></span></span>`:""}</div>`));
+    const desc=[];
+    desc.push(p.capital?(mineLand?"This is your capital. Lose it and you can lose the game.":
+      "This is their capital city."):p.city?"A city.":"Open country.");
+    desc.push(`${TERRAIN[p.terrain].label}, which makes it ${
+      TERRAIN[p.terrain].def>1.3?"very hard":TERRAIN[p.terrain].def>1.1?"harder":"no harder"} to take.`);
+    desc.push(p.fort?`Fortified, level ${p.fort} of 4.`:"No walls.");
+    if(!mineLand&&o&&atWar(c.id,o.id))
+      desc.push(siegeNeed(p)?"Your army must batter it down before walking in.":"An army can simply walk in.");
+    sh.appendChild($(`<div class="small muted">${desc.map(esc).join(" ")}</div>`));
+    if(p.siege>0){
+      const need=siegeNeed(p),pct=Math.round(clamp(p.siege/need,0,1)*100);
+      sh.appendChild($(`<div style="margin-top:8px">
+        <div class="between small"><span style="color:var(--war)">Under siege</span>
+        <span class="mono">${pct}% down</span></div>
+        <div class="bar2" style="margin-top:3px"><i style="width:${pct}%;background:var(--war)"></i></div></div>`));
+    }
+    if(!mineLand&&o&&atWar(c.id,o.id)&&zocBlocked(p,c.id)){
       const blockers=neighbors(pid).filter(q=>
         armiesAt(q.id).some(x=>x.owner!==c.id&&!x.broken&&atWar(c.id,x.owner)));
-      sh.appendChild($(`<div class="card" style="border-color:var(--war);margin-top:8px">
-        <div class="small">An enemy army in <b>${esc(blockers.map(q=>q.name).join(", "))}</b>
-        is holding this ground. You can wear the walls down, but you cannot walk in until
-        that army is beaten or moves.</div></div>`));
+      sh.appendChild($(`<div class="hint" style="margin-top:8px">An enemy army in
+        <b>${esc(blockers.map(q=>q.name).join(", "))}</b> is holding this ground. You cannot walk in
+        until it is beaten or moves away.</div>`));
     }
     const here=armiesAt(pid);
     if(here.length){
-      sh.appendChild($(`<div class="divider"></div><div class="eyebrow">Forces here</div>`));
+      sh.appendChild($(`<div class="divider"></div><div class="eyebrow">Armies here</div>`));
       here.forEach(a=>{
-        const ac=CO(a.owner),g=generalOf(a);
+        const ac=CO(a.owner);
         sh.appendChild($(`<div class="between small" style="padding:3px 0">
           <span class="row"><span class="flag" style="background:${esc(ac?ac.color:"#666")}"></span>
-          ${esc(g.name)} ${a.broken?'<span class="pill war">broken</span>':""}</span>
-          <span class="mono">${a.troops}/${a.max}</span></div>`));
+          ${esc(ac?ac.name:"?")}${a.broken?' <span class="pill war">beaten</span>':""}</span>
+          <span class="mono">${a.troops} men</span></div>`));
       });
     }
-    if(p.owner===c.id){
+    if(mineLand){
       const acts=$(`<div class="row" style="flex-wrap:wrap;margin-top:9px"></div>`);
       if(p.fort<4){
-        const b=$(`<button class="btn sm">Fortify \u00B7 ${money(fortCost(p))}</button>`);
+        const b=$(`<button class="btn sm">Build walls \u00B7 ${money(fortCost(p))}</button>`);
         b.disabled=c.treasury<fortCost(p);
-        b.onclick=()=>{const r2=orderFortify(c.id,pid);if(!r2.ok)toast(r2.msg,"war");else{toast("Fortified.","good");closeSheet();}paintMap();paintBar();paintPanel();};
+        b.onclick=()=>{const r2=orderFortify(c.id,pid);
+          if(!r2.ok)toast(r2.msg,"war");else{toast("Walls raised.","good");closeSheet();}
+          paintMap();paintBar();paintPanel();};
         acts.appendChild(b);
       }
       if(p.city){
         const cost=recruitCost(c.id);
-        const b=$(`<button class="btn sm">Raise army \u00B7 ${money(cost.money)}</button>`);
+        const b=$(`<button class="btn sm">Raise an army here \u00B7 ${money(cost.money)}</button>`);
         b.disabled=c.treasury<cost.money||c.workers<cost.workers;
-        b.onclick=()=>{const r2=orderRecruit(c.id,pid);if(!r2.ok)toast(r2.msg,"war");else{toast("Recruitment ordered.");closeSheet();}paintBar();paintPanel();};
+        b.onclick=()=>{const r2=orderRecruit(c.id,pid);
+          if(!r2.ok)toast(r2.msg,"war");else{toast("Recruiting. It will take about two weeks.");closeSheet();}
+          paintBar();paintPanel();};
         acts.appendChild(b);
       }
       sh.appendChild(acts);
     }
+  });
+}
+
+/* Four cards, once, before the clock starts. The last build dropped a player onto a
+   ticking map with seven tabs and no sentence of explanation anywhere, and they lost a
+   country without ever finding out which one was theirs. */
+const INTRO=[
+ {t:"This is your country",
+  b:"Your land is the bright colour with the white outline around it. Every other nation is faded out. "+
+    "The white star is your capital city."},
+ {t:"You control time",
+  b:"The buttons next to the date pause the game or speed it up. The world keeps moving while you read menus, "+
+    "so pause whenever you want to think. Start on Slow."},
+ {t:"Tap an army to move it",
+  b:"Your armies are the boxes with a white edge and a number, which is how many soldiers are in them. "+
+    "Tap one on the map and you get a list of places to send it. Two armies standing next to each other, "+
+    "at war, fight automatically. You do not need to press anything."},
+ {t:"Taking land",
+  b:"Send an army at an enemy province. If somebody is defending it you have to beat them first. "+
+    "If it has walls you have to knock them down, which takes days. The red ring filling up around a "+
+    "province shows how close it is to falling."},
+ {t:"Winning and losing",
+  b:"You win by being the last nation left. You lose if an enemy takes more than half your land and "+
+    "then your capital. Red rings on your own provinces mean an enemy army is right next door."},
+ {t:"You get a head start",
+  b:"Nobody can start any war for the first year, and nobody will attack you for two years. "+
+    "Other nations will fight each other before then. Use the time to raise armies, build "+
+    "factories and wall your borders."},
+ {t:"If you get stuck",
+  b:"Home always tells you one thing to do next. The messages at the very top are problems that need "+
+    "you now, and tapping one takes you straight there."}];
+function showIntro(step,replay){
+  step=step||0;
+  if(step>=INTRO.length){
+    G.introDone=true;saveGame(true);
+    if(!replay)toast("Press play at the top when you are ready.");
+    return;
+  }
+  const card=INTRO[step];
+  openSheet(sh=>{
+    sh.appendChild($(`<div class="eyebrow">Step ${step+1} of ${INTRO.length}</div>`));
+    sh.appendChild($(`<h3>${esc(card.t)}</h3>`));
+    sh.appendChild($(`<div class="small">${esc(card.b)}</div>`));
+    const b=$(`<button class="btn p" style="width:100%;margin-top:11px">
+      ${step===INTRO.length-1?"Start playing":"Next"}</button>`);
+    b.onclick=()=>{closeSheet();showIntro(step+1,replay);};
+    sh.appendChild(b);
   });
 }
 
@@ -2852,9 +3320,10 @@ function renderStart(){
       G.you=c.id;c.ai=false;
       const nm=START_NAME.trim().replace(/[<>&"']/g,"").slice(0,22);
       if(nm)c.name=nm;
-      G.speed=2;
+      G.speed=0;   // paused until they press play, after the intro
       logAdd(`${c.name} enters the world stage.`);
       resetUI();integrityGuard("start");saveGame(true);render();restartClock();
+      showIntro(0);
     };
     s.appendChild(b);
   });

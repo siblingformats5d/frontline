@@ -1301,10 +1301,13 @@ function myWeek(w){
       }
     });
   });
-  /* One row per sport: the tap should read like a Saturday card, not a ledger. */
+  /* One row per sport, and a row for every sport you sponsor whether it plays
+     or not. A program that vanishes from the card on its bye week reads as a
+     bug, and you lose track of what your department even fields. */
   const seen = {};
-  return out.filter(g => { if(seen[g.sp]) return false; seen[g.sp] = 1; return true })
-            .sort((a,b) => SPORTS.indexOf(a.sp) - SPORTS.indexOf(b.sp));
+  const rows = out.filter(g => { if(seen[g.sp]) return false; seen[g.sp] = 1; return true });
+  me.programs.forEach(p => { if(!seen[p.sport]) rows.push({ sp:p.sport, bye:true }) });
+  return rows.sort((a,b) => SPORTS.indexOf(a.sp) - SPORTS.indexOf(b.sp));
 }
 
 /* ===========================================================================
@@ -1464,7 +1467,11 @@ function playWeek(){
              won:e.best.won, oppRank:e.best.oppRank, spot:e.spot,
              W:e.W, L:e.L, n:e.games.length,
              rank: p ? p.poll : 0, rankWas: before.polls[sp] || 0 };
-  }).sort((a,b) => SPORTS.indexOf(a.sp) - SPORTS.indexOf(b.sp));
+  });
+  /* Idle programs stay on the card, so the department always reads complete
+     rather than appearing to lose teams on their bye weeks. */
+  me.programs.forEach(p => { if(!bySport[p.sport]) card.push({ sp:p.sport, idle:true }) });
+  card.sort((a,b) => SPORTS.indexOf(a.sp) - SPORTS.indexOf(b.sp));
   /* full week record across every game, so a three-game baseball week counts */
   const wk = { W: mine.filter(g => g.w === me.id).length, L: mine.filter(g => g.l === me.id).length };
 
@@ -2342,13 +2349,28 @@ function releaseFee(c){ return Math.round(buyoutFor(c) * 0.55) }
 
 /* How attractive an offer is to a specific coach, in the same units as the
    job itself, so the two are directly comparable. */
+/* Money has to keep mattering. Both terms used to be CLAMPED, so anything above
+   about nine million a year was worth exactly the same as nine million: a
+   director could offer sixty-seven million and get the identical verdict, which
+   is what turned this screen into an infinite haggle. Salary now runs on a log
+   curve, so it keeps buying appeal for ever while each extra million buys less
+   than the last. */
 function offerAppeal(s, sp, offer){
-  const ask = coachAsk({ sport:sp, rec:50, dev:50, gd:50 });   // scale reference
-  const m = clamp(offer.salary / Math.max(1, IN(ask)), 0, 3.6);
+  const ref = Math.max(1, IN(coachAsk({ sport:sp, rec:60, dev:60, gd:60 })));
+  const rel = Math.max(0.15, IN(offer.salary) / ref);
   return jobScore(s, sp, IN(offer.salary))
+       + Math.log(rel) * 15
        + (offer.years - 4) * 2.2
-       + (offer.gtee - 0.6) * 26
-       + m * 2;
+       + (offer.gtee - 0.6) * 26;
+}
+/* Does this offer meet the number the agent came back with? A counter is a
+   promise: match it on all three terms and it is done. */
+function meetsCounter(cand, offer){
+  const w = cand.counter;
+  if(!w) return false;
+  return offer.salary >= Math.round(w.salary * 0.995)
+      && offer.years >= w.years
+      && offer.gtee >= w.gtee - 0.0001;
 }
 /* What this coach is worth on the open market, which is what he thinks he is
    worth, plus what his agent has told him. */
@@ -2425,17 +2447,28 @@ function offerVerdict(cand, offer){
   if(!c) return { k:"gone" };
   const sp = G.search.sport;
   const appeal = offerAppeal(me, sp, offer);
-  /* What he is comparing you against: his current job if he has one, or the
-     best other job he expects to be offered if he does not. */
+  /* What they are weighing you against: the job they already have, or the best
+     one they expect to be offered if they do not have one. */
   const here = cand.at != null ? jobScore(S(cand.at), sp, IN(c.pay)) + 8 : coachValue(c) * 0.55;
   const need = here + (c._agent || 0) * 2.4;
   const gap = appeal - need;
+
+  /* A counter is a commitment. Match it on all three terms and the deal is done.
+     Previously the agent could come back with a number, get exactly that number,
+     and counter it again with a fresh escalation, for ever. */
+  if(meetsCounter(cand, offer)) return { k:"yes", gap, honored:true };
+
   if(offer.salary < cand.asking * 0.8) return { k:"low", gap };
   if(gap > 4) return { k:"yes", gap };
-  if(gap > -7) return { k:"counter", gap,
-    want: { salary: Math.round(Math.max(offer.salary, cand.asking) * rnd(1.06, 1.2)),
+
+  /* There is a limit to haggling. Two counters, then it is yes or no, so the
+     conversation always terminates. */
+  const rounds = cand.rounds || 0;
+  if(gap > -7 && rounds < 2) return { k:"counter", gap,
+    want: { salary: Math.round(Math.max(offer.salary, cand.asking) * rnd(1.05, 1.14)),
             years: Math.max(offer.years, 5),
             gtee: Math.min(0.95, Math.max(offer.gtee, 0.72)) } };
+  if(gap > -7) return { k:"yes", gap, worn:true };
   return { k:"no", gap };
 }
 /* The read you get back down the phone before anything is signed. */
@@ -2443,7 +2476,8 @@ function offerRead(cand, offer){
   const v = offerVerdict(cand, offer);
   if(v.k === "gone") return { word:"Off the board", tone:"muted" };
   if(v.k === "low")  return { word:"Not in the range", tone:"loss" };
-  if(v.k === "yes")  return { word:"They would take this", tone:"win" };
+  if(v.k === "yes")  return { word: v.honored ? "This matches their counter. Done"
+                                  : v.worn ? "They are ready to sign" : "They would take this", tone:"win" };
   if(v.k === "counter") return { word:"Close. Expect a counter", tone:"" };
   /* A flat no at a generous number means the job is the problem, not the money. */
   const rich = offer.gtee >= 0.85 && offer.salary >= cand.asking * 1.4;
@@ -2472,6 +2506,7 @@ function makeOffer(cand, offer){
   }
   if(v.k === "counter"){
     cand.counter = v.want;
+    cand.rounds = (cand.rounds || 0) + 1;
     S2.log.unshift(c.name + "'s agent came back with a number.");
     return { ok:false, why:"They countered.", counter:v.want };
   }
@@ -3906,6 +3941,11 @@ function weekPreview(w, me){
     card.appendChild($('<div class="small muted">Nothing on the calendar this week.</div>'));
   }
   games.forEach(g => {
+    if(g.bye){
+      card.appendChild($('<div class="gamerow"><span class="sp">' + SPORT_SHORT[g.sp] + "</span>" +
+        '<span class="op muted">Idle this week</span></div>'));
+      return;
+    }
     const opp = S(g.opp);
     const r = rankIn(g.sp, g.opp);
     const row = $('<div class="gamerow"><span class="sp">' + SPORT_SHORT[g.sp] + "</span>" +
@@ -3969,6 +4009,11 @@ function revealCard(w, r){
   card.appendChild($('<div class="divider"></div>'));
 
   r.card.forEach(g => {
+    if(g.idle){
+      card.appendChild($('<div class="gamerow"><span class="sp">' + SPORT_SHORT[g.sp] + "</span>" +
+        '<span class="op muted">Bye week</span></div>'));
+      return;
+    }
     const opp = S(g.opp);
     const cls = g.won ? "res-w" : "res-l";
     const sc = fmtScore(g.sp, g.gf, g.ga);
@@ -4713,7 +4758,7 @@ function searchView(w, me){
     [["Recruiting","rec"],["Player development","dev"],["Gameday","gd"]].forEach(([n,k]) =>
       card.appendChild($('<div class="logline"><span class="muted">' + n + '</span><span>' +
         attrBand(c, k) + "</span></div>")));
-    card.appendChild($('<div class="logline"><span class="muted">His agent wants</span><span>' +
+    card.appendChild($('<div class="logline"><span class="muted">The agent wants</span><span>' +
       money(IN(x.asking)) + "/yr</span></div>"));
     if(x.release) card.appendChild($('<div class="logline"><span class="muted">Release from ' +
       esc(at.name) + '</span><span class="res-l">' + money(x.release) + "</span></div>"));
@@ -4728,7 +4773,7 @@ function searchView(w, me){
     mk.onclick = () => openOffer(x, c);
     rr.appendChild(mk);
     card.appendChild(rr);
-    if(x.counter) card.appendChild($('<div class="small gold" style="margin-top:8px">He countered: ' +
+    if(x.counter) card.appendChild($('<div class="small gold" style="margin-top:8px">Countered: ' +
       money(IN(x.counter.salary)) + "/yr, " + x.counter.years + " years, " +
       Math.round(x.counter.gtee*100) + "% guaranteed.</div>"));
     w.appendChild(card);
@@ -4751,7 +4796,7 @@ function openOffer(cand, c){
   const draw = () => {
     body.innerHTML = "";
     const exposure = Math.round(IN(st.salary) * st.years * st.gtee);
-    body.appendChild($('<div class="small muted" style="margin:6px 0 12px">His agent is at ' +
+    body.appendChild($('<div class="small muted" style="margin:6px 0 12px">The agent is at ' +
       money(IN(cand.asking)) + " a year.</div>"));
 
     const row = (lab, val, dec, inc) => {
@@ -4782,7 +4827,7 @@ function openOffer(cand, c){
       '<span class="' + (read.tone === "win" ? "res-w" : read.tone === "loss" ? "res-l" : "") + '">' +
       read.word + "</span></div>"));
     body.appendChild($('<div class="logline"><span class="muted">Due now</span><span>' + money(upfront) + "</span></div>"));
-    body.appendChild($('<div class="logline"><span class="muted">If you fire him in year one</span>' +
+    body.appendChild($('<div class="logline"><span class="muted">If you fire them after one season</span>' +
       '<span class="res-l">' + money(exposure) + "</span></div>"));
 
     const go = $('<button class="btn" style="margin-top:12px">Send it</button>');
@@ -6072,7 +6117,7 @@ if(typeof module !== "undefined" && module.exports){
     inviteThreshold, exitFee, seatCap, fillRate, progOf, VALUE_SETS, SEASON_LEN,
     addSport, dropSport, addableSports, addSportCost, addSportKeep, SPORT_HOME,
     startSearch, makeOffer, offerVerdict, digIn, searchDrift, endSearch, findCoach,
-    buyoutFor, extensionTerms, signExtension, scoutLevel, FIRM_FEE, offerRead, coachFund,
+    buyoutFor, offerVerdict, offerAppeal, meetsCounter, extensionTerms, signExtension, scoutLevel, FIRM_FEE, offerRead, coachFund,
     seedDonors, cultivate, solicit, askTiers, askCeiling, donorTick, restrictedFor,
     rsCap, rsAutoSplit, rsSpend, rsOptedIn, womensShare, titleIXRisk, rsEffect,
     ncInit, ncOptions, ncBook, ncSummary, NC_SPORTS, NC_SLOTS,
